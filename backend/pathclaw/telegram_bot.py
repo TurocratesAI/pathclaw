@@ -93,21 +93,44 @@ class TelegramAPI:
         self.base = f"https://api.telegram.org/bot{token}"
         self.client = httpx.AsyncClient(timeout=60.0)
 
-    async def send(self, chat_id: int, text: str, parse_mode: str | None = "Markdown") -> None:
-        # Telegram messages cap at 4096 characters
+    async def send(self, chat_id: int, text: str, parse_mode: str | None = "Markdown") -> int | None:
+        # Telegram messages cap at 4096 characters; returns the last sent message_id
         chunks = [text[i: i + 3900] for i in range(0, max(len(text), 1), 3900)] or [""]
+        last_id: int | None = None
         for chunk in chunks:
             try:
-                await self.client.post(
+                r = await self.client.post(
                     f"{self.base}/sendMessage",
                     json={"chat_id": chat_id, "text": chunk, "parse_mode": parse_mode},
                 )
+                if r.status_code == 200:
+                    last_id = (r.json().get("result") or {}).get("message_id")
+                    continue
             except Exception:
-                # retry once without markdown in case formatting broke it
-                await self.client.post(
+                pass
+            # retry once without markdown in case formatting broke it
+            try:
+                r = await self.client.post(
                     f"{self.base}/sendMessage",
                     json={"chat_id": chat_id, "text": chunk},
                 )
+                if r.status_code == 200:
+                    last_id = (r.json().get("result") or {}).get("message_id")
+            except Exception:
+                pass
+        return last_id
+
+    async def edit(self, chat_id: int, message_id: int, text: str, parse_mode: str | None = None) -> bool:
+        if len(text) > 3900:
+            text = text[:3897] + "..."
+        try:
+            r = await self.client.post(
+                f"{self.base}/editMessageText",
+                json={"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": parse_mode},
+            )
+            return r.status_code == 200
+        except Exception:
+            return False
 
     async def get_updates(self, offset: int, timeout: int = 30) -> list[dict]:
         try:
@@ -154,6 +177,134 @@ async def _send_to_session(client: httpx.AsyncClient, base: str, session_id: str
         return data.get("response") or data.get("reply") or "(empty reply)"
     except Exception as e:
         return f"(error contacting backend: {e})"
+
+
+def _short_args(args: dict | str, limit: int = 120) -> str:
+    if isinstance(args, str):
+        s = args
+    else:
+        try:
+            s = json.dumps(args, default=str, separators=(",", ":"))
+        except Exception:
+            s = str(args)
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+async def _stream_to_session(
+    api: "TelegramAPI",
+    chat_id: int,
+    base: str,
+    session_id: str,
+    message: str,
+) -> None:
+    """Open SSE stream to /api/chat/stream and live-edit a Telegram message with
+    tool calls and token deltas as events arrive. Flushes at most every
+    ~1.2s to stay under Telegram's edit rate limit."""
+    header = "_thinking…_"
+    msg_id = await api.send(chat_id, header)
+    if msg_id is None:
+        return
+
+    trace_lines: list[str] = []          # `• tool_name(args)` / `  ↳ result / Nms`
+    tool_starts: dict[int, float] = {}   # trace-line idx → monotonic start time
+    current_tool_idx: int | None = None
+    reply_buffer = ""                    # accumulated token stream
+    last_edit = 0.0
+    MIN_EDIT_GAP = 1.2                   # seconds between edits
+    EDIT_TAIL_MAX = 3600                 # leave headroom under 4096
+
+    def _render() -> str:
+        parts = []
+        if trace_lines:
+            parts.append("\n".join(trace_lines))
+        if reply_buffer:
+            if parts:
+                parts.append("")
+            parts.append(reply_buffer.strip())
+        text = "\n".join(parts) or "_thinking…_"
+        if len(text) > EDIT_TAIL_MAX:
+            text = "…" + text[-(EDIT_TAIL_MAX - 1):]
+        return text
+
+    async def _maybe_flush(force: bool = False) -> None:
+        nonlocal last_edit
+        now = asyncio.get_event_loop().time()
+        if not force and (now - last_edit) < MIN_EDIT_GAP:
+            return
+        last_edit = now
+        await api.edit(chat_id, msg_id, _render())
+
+    import time as _time
+    try:
+        async with httpx.AsyncClient(timeout=None) as sc:
+            async with sc.stream(
+                "POST",
+                f"{base}/api/chat/stream",
+                json={"message": message, "session_id": session_id},
+                timeout=None,
+            ) as resp:
+                if resp.status_code != 200:
+                    await api.edit(chat_id, msg_id, f"(backend returned {resp.status_code})")
+                    return
+                async for raw in resp.aiter_lines():
+                    if not raw or not raw.startswith("data:"):
+                        continue
+                    try:
+                        evt = json.loads(raw[5:].strip())
+                    except Exception:
+                        continue
+
+                    t = evt.get("type")
+                    if t == "tool_start":
+                        name = evt.get("name", "?")
+                        args = _short_args(evt.get("args", {}))
+                        trace_lines.append(f"• {name}({args})")
+                        current_tool_idx = len(trace_lines) - 1
+                        tool_starts[current_tool_idx] = _time.monotonic()
+                        await _maybe_flush()
+                    elif t == "tool_result":
+                        dur_ms = evt.get("duration_ms", 0)
+                        dur = f"{dur_ms/1000:.1f}s" if dur_ms >= 1000 else f"{dur_ms}ms"
+                        res = (evt.get("result") or "").strip().splitlines()
+                        first = res[0] if res else ""
+                        summary = first[:140] + ("…" if len(first) > 140 else "")
+                        if current_tool_idx is not None:
+                            trace_lines[current_tool_idx] += f"  — {dur}"
+                            if summary:
+                                trace_lines.append(f"  ↳ {summary}")
+                        current_tool_idx = None
+                        await _maybe_flush()
+                    elif t == "status":
+                        # polling updates (wait_for_job) — don't accumulate, just refresh
+                        if current_tool_idx is not None and trace_lines:
+                            msg = evt.get("message", "")
+                            tail = trace_lines[-1]
+                            # replace any previous "  … <status>" line instead of piling up
+                            if tail.startswith("  … "):
+                                trace_lines[-1] = f"  … {msg}"
+                            else:
+                                trace_lines.append(f"  … {msg}")
+                        await _maybe_flush()
+                    elif t == "token":
+                        reply_buffer += evt.get("content", "")
+                        await _maybe_flush()
+                    elif t == "code_exec":
+                        code = (evt.get("code") or "").strip().splitlines()
+                        head = code[0] if code else ""
+                        trace_lines.append(f"• run_python: {head[:140]}")
+                        current_tool_idx = len(trace_lines) - 1
+                        tool_starts[current_tool_idx] = _time.monotonic()
+                        await _maybe_flush()
+                    elif t == "error":
+                        trace_lines.append(f"⚠ {evt.get('message', 'error')}")
+                        await _maybe_flush(force=True)
+                    elif t == "done":
+                        break
+    except Exception as e:
+        trace_lines.append(f"⚠ stream error: {e}")
+
+    # Final flush — ensure the message reflects the end state
+    await api.edit(chat_id, msg_id, _render())
 
 
 async def _system_status(client: httpx.AsyncClient, base: str) -> str:
@@ -309,9 +460,7 @@ async def _handle_message(api: TelegramAPI, client: httpx.AsyncClient, base: str
             await api.send(chat_id, "No PathClaw sessions yet. Create one with /new <title>.")
             return
 
-    await api.send(chat_id, "_thinking..._")
-    reply = await _send_to_session(client, base, bound, text)
-    await api.send(chat_id, reply)
+    await _stream_to_session(api, chat_id, base, bound, text)
 
 
 async def run(token: str) -> None:

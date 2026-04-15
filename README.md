@@ -108,6 +108,8 @@ ollama pull qwen3:8b        # fast, good tool use
 ollama pull llama3.3:8b     # stronger reasoning
 ```
 
+> **Note on model size.** Smaller local models (≤7–8B, including `gemma4:e4b`, `qwen3:4b`, etc.) work for short one-off prompts but tend to drift on multi-step pipelines — hallucinated tool names, placeholder arguments, or forgetting earlier steps. If you see the agent repeatedly calling the wrong tool or inventing file IDs, try `gemma4:26b`, `qwen3:32b`, or a cloud provider (Anthropic / OpenAI / Google). For automated workflows (Telegram, overnight runs), favour a ≥20B local model or a cloud API.
+
 ### Start the server
 
 ```bash
