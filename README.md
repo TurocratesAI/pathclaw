@@ -393,6 +393,37 @@ Every user message goes through this pipeline:
 
 ---
 
+## Tool-input guardrails
+
+Small LLMs (and occasionally large ones) will happily invent `job_id`, `dataset_id`,
+`experiment_id`, or `plugin_id` strings that look plausible but point at nothing.
+Schema validation doesn't catch this — the shape is correct; the *reference* is
+not. Left alone, `wait_for_job("feat-abc123")` burns 30 minutes polling a
+non-existent endpoint.
+
+PathClaw runs a **referential guardrail** on every tool call before the handler
+body executes (`backend/pathclaw/api/validators.py`):
+
+- Each resolver (`resolve_dataset_id`, `resolve_experiment_id`, `resolve_job_id`,
+  `resolve_plugin_id`, `resolve_slide_stem`, `resolve_session_path`) does a cheap
+  filesystem / registry check. On a miss it raises `ToolInputError` with a
+  model-readable message: what's wrong, what's available, and which tool to call
+  instead.
+- The message is returned as the tool result, so the LLM sees it on the next
+  round and self-corrects — no exception bubbles to the user.
+- A `TOOL_VALIDATORS` table wires resolvers to high-blast-radius tools
+  (`start_training`, `start_feature_extraction`, `wait_for_job`,
+  `compare_experiments`, `generate_heatmap`, `update_plugin_config`, etc.).
+  Read-only listing tools are intentionally exempt.
+- Runs in both the streaming `wait_for_job` inline branch and the generic
+  `_execute_tool` dispatcher, so the check cannot be bypassed.
+
+To add validation to a new tool: import the appropriate resolver and add a row
+to `TOOL_VALIDATORS` with `(arg_name, resolver, aux_keys)`. No change to the
+tool handler is required.
+
+---
+
 ## How to add a new skill
 
 A skill is just a Markdown file that gets injected into the system prompt when relevant keywords are detected.

@@ -23,6 +23,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from pathclaw.api import llm_providers
+from pathclaw.api.validators import validate_tool_args
 
 logger = logging.getLogger(__name__)
 
@@ -1984,6 +1985,13 @@ def _fmt_citation_row(p: dict, idx: int) -> str:
 
 
 async def _execute_tool(name: str, arguments: dict[str, Any], session_id: str = "") -> str:
+    # Referential guardrail — catches fabricated ids before the tool body runs.
+    # Returns a model-readable error so the LLM self-corrects on the next turn
+    # instead of polling a non-existent job or dispatching against a phantom dataset.
+    err = validate_tool_args(name, arguments)
+    if err is not None:
+        return err
+
     base = _get_backend_base()
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
@@ -3856,15 +3864,13 @@ async def _stream_generator(
                 }
                 poll_url = f"{base}{route_map.get(jtype, f'/api/training/{jid}')}"
 
-                # Pre-flight: verify the job actually exists before polling.
-                # Stops the agent from hallucinating job_ids and burning 30 min on a 404 loop.
-                if not jid or jid in ("?", "unknown", "null", "None"):
-                    result = (
-                        f"ERROR: wait_for_job called with empty job_id. "
-                        f"You must first call start_feature_extraction / start_training / "
-                        f"download_gdc / start_preprocessing and use the job_id it returns. "
-                        f"Do NOT invent job_ids."
-                    )
+                # Referential guardrail: reject fabricated/empty job_ids up front
+                # so we don't burn 30 min polling a phantom. The table-driven
+                # validator runs the same filesystem check as _execute_tool.
+                _guard_err = validate_tool_args("wait_for_job", fn_args)
+                if _guard_err is not None:
+                    result = _guard_err
+                    jid = ""  # skip the polling loop
                 else:
                     try:
                         async with httpx.AsyncClient(timeout=10.0) as pc:
