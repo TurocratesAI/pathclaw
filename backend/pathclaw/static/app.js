@@ -1435,11 +1435,6 @@
             if (el('msgs').children.length === 0) {
                 el('msgs').innerHTML = `<div class="msg agent"><div class="who">PathClaw</div>
                     <strong>What would you like to do?</strong><br><br>
-                    <strong>🧬 Omics / MAF</strong> — parse mutations, TMB, MSI, oncoplots, survival analysis, biomarker discovery<br>
-                    <strong>🔬 WSI pipeline</strong> — GDC download → patch → UNI/Virchow2/CONCH features → MIL training (TransMIL / CLAM / ABMIL + MAMMOTH) → attention heatmaps<br>
-                    <strong>📚 Literature</strong> — PubMed + Semantic Scholar reviews with clickable links (I'll ask scope &amp; time range first)<br>
-                    <strong>📝 Manuscripts</strong> — draft full LaTeX paper, embed plots directly from training runs, compile to PDF, export the .tex project<br>
-                    <strong>📦 Export</strong> — trained model .pth + config + metrics + plots as a .zip; manuscript as a .zip<br><br>
                     Try: <em>"Review the SOTA on MSI prediction from H&amp;E, last 3 years, with PubMed links"</em><br>
                     Or: <em>"Train TransMIL on tcga-ucec UNI features for MSI, then write up the results section"</em>
                 </div>`;
