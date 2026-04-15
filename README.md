@@ -1,7 +1,7 @@
 <p align="center">
   <img src="docs/logo.jpeg" width="180" alt="PathClaw"><br/>
   <b>PathClaw — viberesearching</b><br/>
-  <i>The OpenClaw for medical images, starting with pathology.</i>
+  <i>An AI lab where multiple scientists work in parallel on your medical-imaging problems.</i>
 </p>
 
 ## About
@@ -61,7 +61,7 @@ Each session gets:
 Cross-session features:
 - **Web research** from any session — PubMed search, URL fetch (with auto-routing through NCBI E-utilities for PubMed/PMC), paper-PDF ingestion.
 - **Telegram bridge** — run one bot worker and ping any of your running projects from your phone. `/sessions` lists them, `/session <id>` binds the Telegram chat to one project, `/new <title>` spins up a fresh one, and any plain message goes to the bound agent. Supports username whitelist + optional `/start <passcode>` gate so only you can talk to your bots.
-- **Shared persistent memory** — facts you tell any session to `remember` (HF token paths, default TCGA cache dir, your lab conventions) are visible to all sessions.
+- **Session-scoped memory** — facts you tell a session to `remember` (dataset ids, experiment ids, paths, conventions) stay in that session (`~/.pathclaw/chats/{sid}.memory.json`). Projects don't leak context into each other.
 
 ### Bring Your Own LLM (BYOL)
 PathClaw is LLM-agnostic. Out of the box it supports:
