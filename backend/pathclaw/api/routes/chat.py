@@ -3768,7 +3768,18 @@ async def _execute_tool(name: str, arguments: dict[str, Any], session_id: str = 
                     return f"make_plot error ({type(e).__name__}): {e}"
 
             else:
-                return f"Unknown tool: {name}"
+                import difflib as _difflib
+                valid = [t.get("function", {}).get("name", "") for t in TOOLS]
+                valid = [n for n in valid if n]
+                close = _difflib.get_close_matches(name, valid, n=5, cutoff=0.55)
+                hint = (
+                    f"\n\nDid you mean: {', '.join(close)}? "
+                    f"CALL THE CORRECT TOOL NAME ON YOUR NEXT TURN — do not retry '{name}'."
+                ) if close else (
+                    f"\n\nRetry with one of the valid tool names instead. "
+                    f"Use list_artifacts or search_gdc / download_gdc / register_dataset as appropriate."
+                )
+                return f"ERROR: Unknown tool '{name}'.{hint}"
 
         except Exception as e:
             import traceback as _tb
