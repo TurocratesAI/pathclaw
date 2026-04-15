@@ -234,26 +234,43 @@ async def _handle_message(api: TelegramAPI, client: httpx.AsyncClient, base: str
         lines = ["*PathClaw sessions:*"]
         for s in sessions:
             sid = s.get("session_id", "")
+            slug = s.get("slug") or ""
             title = s.get("title") or "(untitled)"
+            label = f"`{slug}`" if slug else f"`{sid}`"
             mark = " ← bound" if sid == bound else ""
-            lines.append(f"• `{sid}` — {title}{mark}")
+            lines.append(f"• {label} — {title}{mark}")
+        lines.append("\n_Use_ `/session <slug-or-id>` _to bind this chat._")
         await api.send(chat_id, "\n".join(lines))
         return
 
     if text.startswith("/session"):
         parts = text.split(maxsplit=1)
         if len(parts) < 2:
-            await api.send(chat_id, "Usage: /session <session_id>")
+            await api.send(chat_id, "Usage: /session <slug-or-id>")
             return
         target = parts[1].strip()
         sessions = await _list_sessions(client, base)
-        valid = any(s.get("session_id") == target for s in sessions)
-        if not valid:
+        # Resolve: slug exact, then session_id exact, then session_id prefix (>=4 chars)
+        resolved = ""
+        for s in sessions:
+            if s.get("slug") == target:
+                resolved = s.get("session_id", "")
+                break
+        if not resolved:
+            for s in sessions:
+                if s.get("session_id") == target:
+                    resolved = target
+                    break
+        if not resolved and len(target) >= 4:
+            prefix_hits = [s.get("session_id", "") for s in sessions if s.get("session_id", "").startswith(target)]
+            if len(prefix_hits) == 1:
+                resolved = prefix_hits[0]
+        if not resolved:
             await api.send(chat_id, f"Unknown session `{target}`. Use /sessions to list.")
             return
-        bindings[key] = target
+        bindings[key] = resolved
         _save_state(state)
-        await api.send(chat_id, f"Bound this chat to session `{target}`.")
+        await api.send(chat_id, f"Bound this chat to session `{resolved}`.")
         return
 
     if text.startswith("/new"):

@@ -15,7 +15,7 @@ import logging
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException
@@ -412,20 +412,57 @@ def _chat_path(session_id: str) -> Path:
     return CHATS_DIR / f"{session_id}.json"
 
 
+def _slugify(s: str) -> str:
+    """Normalize to a short kebab-case slug. Returns '' if input cleans to empty."""
+    import re as _re
+    s = (s or "").strip().lower()
+    s = _re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    return s[:40]
+
+
+def _resolve_session(id_or_slug: str) -> str:
+    """Map a slug OR session_id (or unique id prefix) to an actual session_id.
+
+    Returns '' if nothing matches. Session_id match wins over slug match."""
+    if not id_or_slug:
+        return ""
+    key = id_or_slug.strip()
+    # Exact id hit
+    if _chat_path(key).exists():
+        return key
+    key_slug = _slugify(key)
+    id_prefix_matches: list[str] = []
+    for p in CHATS_DIR.glob("*.json"):
+        try:
+            d = json.loads(p.read_text())
+        except Exception:
+            continue
+        sid = d.get("session_id", p.stem)
+        if d.get("slug") == key_slug and key_slug:
+            return sid
+        if sid.startswith(key) and len(key) >= 4:
+            id_prefix_matches.append(sid)
+    if len(id_prefix_matches) == 1:
+        return id_prefix_matches[0]
+    return ""
+
+
 def _save_chat(session_id: str) -> None:
     msgs = _conversations.get(session_id, [])
     visible = [m for m in msgs if m.get("role") in ("user", "assistant") and m.get("content")]
     auto_title = next((m["content"][:80] for m in visible if m["role"] == "user"), "New Session")
     now = _time_mod.time()
 
-    # Preserve manually-set title and created_at if file already exists
+    # Preserve manually-set title, slug, and created_at if file already exists
     existing_title = None
+    existing_slug = None
     created_at = now
     p = _chat_path(session_id)
     if p.exists():
         try:
             existing = json.loads(p.read_text())
             existing_title = existing.get("title")
+            existing_slug = existing.get("slug")
             created_at = existing.get("created_at", now)
         except Exception:
             pass
@@ -435,6 +472,7 @@ def _save_chat(session_id: str) -> None:
 
     payload = {
         "session_id": session_id,
+        "slug": existing_slug,
         "title": title,
         "created_at": created_at,
         "updated_at": now,
@@ -451,6 +489,7 @@ def _list_chats() -> list[dict]:
             d = json.loads(p.read_text())
             chats.append({
                 "session_id": d["session_id"],
+                "slug": d.get("slug"),
                 "title": d.get("title", "New Session"),
                 "created_at": d.get("created_at", d.get("timestamp", 0)),
                 "updated_at": d.get("updated_at", d.get("timestamp", 0)),
@@ -710,6 +749,27 @@ def _build_system_prompt(extra_skill: str = "", session_id: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 TOOLS = [
+    # --- Session identity ---
+    {
+        "type": "function",
+        "function": {
+            "name": "rename_session",
+            "description": (
+                "Set a short kebab-case slug (and optionally a human title) on THIS session so it can be referenced by name. "
+                "Useful for Telegram (`/session <slug>`), the sidebar, and your own cross-reference. "
+                "Slug must be a-z/0-9/- up to 40 chars and unique across sessions. "
+                "Call this ONCE near the start of a new project, e.g. rename_session(slug='chol-idh', title='TCGA-CHOL IDH1 MIL')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "slug": {"type": "string", "description": "Kebab-case identifier (e.g. 'chol-idh', 'ucec-msi-v2')"},
+                    "title": {"type": "string", "description": "Optional human-readable title for the sidebar/history list"},
+                },
+                "required": ["slug"],
+            },
+        },
+    },
     # --- Memory ---
     {
         "type": "function",
@@ -2170,8 +2230,43 @@ async def _execute_tool(name: str, arguments: dict[str, Any], session_id: str = 
     base = _get_backend_base()
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
+            # --- Session rename ---
+            if name == "rename_session":
+                if not session_id:
+                    return "Error: session context unavailable."
+                raw_slug = (arguments.get("slug") or "").strip()
+                slug = _slugify(raw_slug)
+                if raw_slug and not slug:
+                    return f"Error: slug '{raw_slug}' has no letters or digits after normalization."
+                p = _chat_path(session_id)
+                if not p.exists():
+                    # Create a stub so rename on a brand-new session works
+                    now = _time_mod.time()
+                    p.write_text(json.dumps({
+                        "session_id": session_id, "title": "New Session",
+                        "created_at": now, "updated_at": now, "messages": [],
+                    }, indent=2))
+                data = json.loads(p.read_text())
+                if slug:
+                    for other in CHATS_DIR.glob("*.json"):
+                        if other == p:
+                            continue
+                        try:
+                            od = json.loads(other.read_text())
+                        except Exception:
+                            continue
+                        if od.get("slug") == slug:
+                            return f"Error: slug '{slug}' already used by session {od.get('session_id')}."
+                    data["slug"] = slug
+                title = (arguments.get("title") or "").strip()
+                if title:
+                    data["title"] = title[:200]
+                data["updated_at"] = _time_mod.time()
+                p.write_text(json.dumps(data, indent=2))
+                return f"Session renamed. slug={data.get('slug')!r} title={data.get('title')!r}"
+
             # --- Memory (per-session) ---
-            if name == "remember_fact":
+            elif name == "remember_fact":
                 if not session_id:
                     return "Error: session context unavailable for memory."
                 key = arguments.get("key", "").strip()
@@ -4231,9 +4326,56 @@ async def create_session():
     return {"session_id": sid, "title": "New Session"}
 
 
+class RenameSessionBody(BaseModel):
+    slug: Optional[str] = None
+    title: Optional[str] = None
+
+
+@router.post("/sessions/{session_id}/rename")
+async def rename_session(session_id: str, body: RenameSessionBody):
+    """Set a short slug and/or title on a session.
+
+    Slugs are kebab-case, unique across sessions, <=40 chars. Used by Telegram
+    (`/session <slug>`) and the UI sidebar."""
+    actual = _resolve_session(session_id)
+    if not actual:
+        raise HTTPException(404, "Session not found")
+    p = _chat_path(actual)
+    data = json.loads(p.read_text())
+
+    if body.slug is not None:
+        new_slug = _slugify(body.slug)
+        if body.slug and not new_slug:
+            raise HTTPException(400, "Slug must contain letters or digits")
+        if new_slug:
+            for other in CHATS_DIR.glob("*.json"):
+                if other == p:
+                    continue
+                try:
+                    od = json.loads(other.read_text())
+                except Exception:
+                    continue
+                if od.get("slug") == new_slug:
+                    raise HTTPException(409, f"Slug '{new_slug}' already in use by session {od.get('session_id')}")
+        data["slug"] = new_slug or None
+
+    if body.title is not None:
+        t = body.title.strip()
+        if t:
+            data["title"] = t[:200]
+
+    data["updated_at"] = _time_mod.time()
+    p.write_text(json.dumps(data, indent=2))
+    return {"session_id": actual, "slug": data.get("slug"), "title": data.get("title")}
+
+
 @router.post("/sessions/{session_id}/resume")
 async def resume_session(session_id: str):
     """Load session for display and hydrate in-memory conversation from disk."""
+    actual = _resolve_session(session_id)
+    if not actual:
+        raise HTTPException(404, "Session not found")
+    session_id = actual
     p = _chat_path(session_id)
     if not p.exists():
         raise HTTPException(404, "Session not found")

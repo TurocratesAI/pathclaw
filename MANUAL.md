@@ -229,13 +229,19 @@ discover biomarkers: differentially-mutated genes between model-predicted
 
 Commands:
 - `/start [passcode]` — authorize your chat.
-- `/sessions` — list all PathClaw sessions.
-- `/session <id>` — bind this chat to a session.
+- `/sessions` — list all PathClaw sessions (each entry shows the slug if set,
+  otherwise a short id prefix).
+- `/session <slug-or-id>` — bind this chat to a session. Accepts the session's
+  slug (`chol-idh1`), its full UUID, or any id prefix ≥4 characters that
+  uniquely matches one session.
 - `/new <title>` — create a new session and bind.
 - `/status` — current session + bot health.
 
 Any non-command message goes to the bound session's agent — same tools, same
 memory, same manuscript.
+
+**Tip:** Telegram is much easier to use once your sessions have slugs. See
+§9 for how to rename a session.
 
 ---
 
@@ -258,6 +264,35 @@ endpoint), persistent global memory (`remember_fact`), feature cache (backbones
 download once, reused across all sessions).
 
 Switch sessions from the session drawer or `?session_id=<uuid>` URL param.
+
+### Naming sessions (slugs)
+
+Every session has a UUID plus an optional **slug** — a short kebab-case name
+(`a-z`, `0-9`, `-`, up to 40 chars) that must be unique across sessions. Slugs
+are how you refer to a session without copy-pasting its UUID — in the sidebar,
+on Telegram (`/session chol-idh1`), and in agent chat history.
+
+Three ways to set a slug:
+
+1. **From chat (recommended):** ask the agent — *"rename this session to
+   `chol-idh1`"*. The agent calls the `rename_session` tool with
+   `{"slug":"chol-idh1"}` (and an optional human `title`). The slug is validated
+   for format and uniqueness; on conflict the tool returns an error and the
+   agent will ask for a different name.
+2. **From the sidebar:** session drawer → rename action → enter a slug and/or
+   title.
+3. **Directly via HTTP:**
+   ```bash
+   curl -X POST http://localhost:8101/api/chat/sessions/<session_id>/rename \
+     -H "Content-Type: application/json" \
+     -d '{"slug":"chol-idh1","title":"TCGA-CHOL IDH1 mutation"}'
+   ```
+   Returns `409` on slug conflict, `400` on bad format, `404` if the session
+   doesn't exist.
+
+Slugs are resolved everywhere session ids are accepted: chat resume
+(`?session_id=<slug>`), Telegram `/session <slug>`, and the agent tool
+`resume_session`.
 
 ---
 

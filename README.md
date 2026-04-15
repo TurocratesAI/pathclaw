@@ -57,10 +57,11 @@ Each session gets:
 - **Its own notebook** (`~/.pathclaw/chats/{sid}.notes.md`) — a running markdown log of decisions, dataset paths, job IDs, and interim results. Auto-injected into the agent's system prompt every round, so context survives trimming and compaction.
 - **Its own LaTeX manuscript** (`~/.pathclaw/chats/{sid}_manuscript/`) — go from ideation → experiments → paper draft in the same chat. The agent writes `main.tex`, adds citations to `refs.bib` as it reads papers, and compiles to PDF (`tectonic` or `texlive-latex-base` required for the compile step).
 - **Its own attached folders** — PDFs uploaded and attached per-session, so each project sees only its relevant literature.
+- **A human-readable name (slug)** — every session has a UUID and an optional kebab-case slug you can set. Give a session a name like `chol-idh1` and you can refer to it by that name everywhere: in the sidebar, in Telegram (`/session chol-idh1`), or in-chat (ask the agent to `rename_session` to something memorable). Slugs are unique across sessions and fall back to a session-id prefix if unset.
 
 Cross-session features:
 - **Web research** from any session — PubMed search, URL fetch (with auto-routing through NCBI E-utilities for PubMed/PMC), paper-PDF ingestion.
-- **Telegram bridge** — run one bot worker and ping any of your running projects from your phone. `/sessions` lists them, `/session <id>` binds the Telegram chat to one project, `/new <title>` spins up a fresh one, and any plain message goes to the bound agent. Supports username whitelist + optional `/start <passcode>` gate so only you can talk to your bots.
+- **Telegram bridge** — run one bot worker and ping any of your running projects from your phone. `/sessions` lists them with their slugs, `/session <slug-or-id>` binds the Telegram chat to one project (slug, full id, or any id prefix ≥4 chars works), `/new <title>` spins up a fresh one, and any plain message goes to the bound agent. Supports username whitelist + optional `/start <passcode>` gate so only you can talk to your bots.
 - **Session-scoped memory** — facts you tell a session to `remember` (dataset ids, experiment ids, paths, conventions) stay in that session (`~/.pathclaw/chats/{sid}.memory.json`). Projects don't leak context into each other.
 
 ### Bring Your Own LLM (BYOL)
@@ -263,6 +264,7 @@ MIL methods: ABMIL, MeanPool, TransMIL, CLAM, DSMIL, RRTMIL, WIKG (all with opti
 | `remember_fact` / `recall_facts` | Cross-session memory (HF token paths, conventions, etc.) |
 | `write_note` / `read_notes` | Per-session notebook (`~/.pathclaw/chats/{sid}.notes.md`) |
 | `write_manuscript` / `read_manuscript` / `compile_manuscript` | Per-session LaTeX manuscript; tectonic/pdflatex compile |
+| `rename_session` | Set a kebab-case slug (and optional title) on this session so Telegram / sidebar can reference it by name |
 
 ### Literature & Papers (6)
 | Tool | Description |
@@ -633,8 +635,12 @@ curl -X POST http://localhost:8101/api/telegram/start \
   -d '{"token":"<botfather-token>","username":"<your-tg-user>","passcode":"optional"}'
 ```
 
-From Telegram: `/sessions`, `/session <id>`, `/new <title>`, `/status`. Each chat
-binds to one PathClaw session. Logs at `~/.pathclaw/telegram.log`.
+From Telegram: `/sessions`, `/session <slug-or-id>`, `/new <title>`, `/status`.
+`/sessions` shows each session's slug if set (else its id prefix). `/session` accepts
+the slug, the full session id, or any id prefix ≥4 chars. Set slugs with the
+`rename_session` agent tool, the sidebar rename action, or
+`POST /api/chat/sessions/{id}/rename` with `{"slug":"chol-idh1","title":"CHOL IDH1"}`.
+Logs at `~/.pathclaw/telegram.log`.
 
 ## Resource allocation
 
