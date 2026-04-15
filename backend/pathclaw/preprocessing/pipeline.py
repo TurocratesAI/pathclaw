@@ -17,24 +17,25 @@ def otsu_tissue_mask(
     slide_path: str,
     level: int = 1,
     kernel_size: int = 7,
+    max_thumb_px: int = 4096,
 ) -> tuple[np.ndarray, float]:
     """Generate a binary tissue mask using Otsu thresholding.
-    
+
     Returns:
         mask: Binary tissue mask (True = tissue)
         tissue_pct: Percentage of area that is tissue
     """
+    # Read a size-capped thumbnail for Otsu. `level` is accepted for backward
+    # compatibility but is ignored — on large WSIs the requested level's full
+    # dimensions can be gigapixels, which is both slow and wasteful for Otsu.
     try:
         import openslide
         slide = openslide.OpenSlide(slide_path)
-        # Read at the specified level (lower resolution for speed)
-        read_level = min(level, slide.level_count - 1)
-        dims = slide.level_dimensions[read_level]
-        thumbnail = slide.read_region((0, 0), read_level, dims).convert("RGB")
+        thumbnail = slide.get_thumbnail((max_thumb_px, max_thumb_px)).convert("RGB")
         slide.close()
     except Exception:
-        # Fallback: try reading as a regular image
         thumbnail = Image.open(slide_path).convert("RGB")
+        thumbnail.thumbnail((max_thumb_px, max_thumb_px))
 
     img_array = np.array(thumbnail)
 
@@ -76,60 +77,65 @@ def extract_patches(
     try:
         import openslide
         slide = openslide.OpenSlide(slide_path)
-        
-        # Determine downsample factor for target magnification
+
         base_mag = float(slide.properties.get("openslide.objective-power", 40))
         downsample = base_mag / magnification
-        
-        # Find the closest level
         level = slide.get_best_level_for_downsample(downsample)
-        level_dims = slide.level_dimensions[level]
-        level_downsample = slide.level_downsamples[level]
-        
-        # Scale tissue mask to match slide level 0 coordinates
-        mask_h, mask_w = tissue_mask.shape
+
         slide_w, slide_h = slide.level_dimensions[0]
-        
-        patches = []
-        scale_x = slide_w / mask_w
-        scale_y = slide_h / mask_h
-        
-        for y in range(0, slide_h - patch_size, stride):
-            for x in range(0, slide_w - patch_size, stride):
-                # Check tissue in mask coordinates
-                mx = int(x / scale_x)
-                my = int(y / scale_y)
-                mpw = max(1, int(patch_size / scale_x))
-                mph = max(1, int(patch_size / scale_y))
-                
-                # Bound check
-                mx_end = min(mx + mpw, mask_w)
-                my_end = min(my + mph, mask_h)
-                
-                if mx >= mask_w or my >= mask_h:
-                    continue
-                    
-                region = tissue_mask[my:my_end, mx:mx_end]
-                if region.size == 0:
-                    continue
-                    
-                tissue_ratio = float(np.sum(region)) / region.size
-                
-                if tissue_ratio >= min_tissue_pct:
-                    patches.append({
-                        "x": x,
-                        "y": y,
-                        "patch_size": patch_size,
-                        "level": level,
-                        "tissue_pct": round(tissue_ratio * 100, 1),
-                    })
-        
         slide.close()
-        return patches
-        
     except ImportError:
-        # Without openslide, return empty
         return []
+
+    mask_h, mask_w = tissue_mask.shape
+    if mask_h == 0 or mask_w == 0 or slide_w <= patch_size or slide_h <= patch_size:
+        return []
+
+    scale_x = slide_w / mask_w
+    scale_y = slide_h / mask_h
+
+    xs = np.arange(0, slide_w - patch_size, stride, dtype=np.int64)
+    ys = np.arange(0, slide_h - patch_size, stride, dtype=np.int64)
+    if xs.size == 0 or ys.size == 0:
+        return []
+
+    # Integral image over the tissue mask → O(1) rectangle-sum lookups.
+    mask_i32 = tissue_mask.astype(np.int32, copy=False)
+    integral = np.pad(np.cumsum(np.cumsum(mask_i32, axis=0), axis=1), ((1, 0), (1, 0)))
+
+    mx0 = np.clip((xs / scale_x).astype(np.int64), 0, mask_w)
+    my0 = np.clip((ys / scale_y).astype(np.int64), 0, mask_h)
+    mx1 = np.clip(((xs + patch_size) / scale_x).astype(np.int64), 0, mask_w)
+    my1 = np.clip(((ys + patch_size) / scale_y).astype(np.int64), 0, mask_h)
+
+    # Broadcast to (Ny, Nx)
+    my0_c, my1_c = my0[:, None], my1[:, None]
+    mx0_r, mx1_r = mx0[None, :], mx1[None, :]
+
+    region_sum = (
+        integral[my1_c, mx1_r]
+        - integral[my0_c, mx1_r]
+        - integral[my1_c, mx0_r]
+        + integral[my0_c, mx0_r]
+    )
+    area = np.maximum((my1 - my0)[:, None] * (mx1 - mx0)[None, :], 1)
+    ratios = region_sum.astype(np.float32) / area
+
+    keep = np.argwhere(ratios >= min_tissue_pct)
+    if keep.size == 0:
+        return []
+
+    xs_i64, ys_i64 = xs, ys
+    return [
+        {
+            "x": int(xs_i64[xi]),
+            "y": int(ys_i64[yi]),
+            "patch_size": patch_size,
+            "level": int(level),
+            "tissue_pct": round(float(ratios[yi, xi]) * 100, 1),
+        }
+        for yi, xi in keep
+    ]
 
 
 def save_preview(
