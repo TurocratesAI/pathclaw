@@ -1145,12 +1145,15 @@ TOOLS = [
                 "Polls every 10 seconds and returns when status is completed or failed. "
                 "Use this instead of manually calling get_job_status in a loop. "
                 "Returns final status, progress, and any available metrics. "
-                "Timeout: 30 minutes."
+                "Timeout: 30 minutes. "
+                "CRITICAL: job_id MUST be a real id returned by a prior start_*/download_* tool "
+                "call in this session. Do NOT invent, guess, or carry over job_ids from older "
+                "sessions — the call will fail fast with an explicit error if the job does not exist."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "job_id": {"type": "string", "description": "Job ID to wait for"},
+                    "job_id": {"type": "string", "description": "Job ID returned by a previous start_*/download_* tool call. Must exist; do not fabricate."},
                     "job_type": {
                         "type": "string",
                         "description": "Job type: preprocess | training | eval | features | lora | gdc",
@@ -3852,14 +3855,51 @@ async def _stream_generator(
                     "gdc": f"/api/gdc/jobs/{jid}",
                 }
                 poll_url = f"{base}{route_map.get(jtype, f'/api/training/{jid}')}"
-                result = f"Job {jid}: still running after 30 min."
-                for poll_i in range(180):
+
+                # Pre-flight: verify the job actually exists before polling.
+                # Stops the agent from hallucinating job_ids and burning 30 min on a 404 loop.
+                if not jid or jid in ("?", "unknown", "null", "None"):
+                    result = (
+                        f"ERROR: wait_for_job called with empty job_id. "
+                        f"You must first call start_feature_extraction / start_training / "
+                        f"download_gdc / start_preprocessing and use the job_id it returns. "
+                        f"Do NOT invent job_ids."
+                    )
+                else:
+                    try:
+                        async with httpx.AsyncClient(timeout=10.0) as pc:
+                            preflight = await pc.get(poll_url)
+                        if preflight.status_code == 404:
+                            result = (
+                                f"ERROR: {jtype} job '{jid}' does not exist. "
+                                f"You likely fabricated this job_id. "
+                                f"Call list_queue or get_job_status to see real job_ids, "
+                                f"or call the actual start_* tool first to create one."
+                            )
+                            jid = ""  # skip the polling loop
+                        elif preflight.status_code != 200:
+                            result = f"ERROR: cannot reach {poll_url} (HTTP {preflight.status_code})"
+                            jid = ""
+                    except Exception as e:
+                        result = f"ERROR: pre-flight check for job {jid} failed: {e}"
+                        jid = ""
+                    else:
+                        result = f"Job {jid}: still running after 30 min."
+
+                consecutive_errors = 0
+                for poll_i in range(180 if jid else 0):
                     elapsed = poll_i * 10
                     yield _sse({"type": "status", "message": f"Waiting for {jtype} job {jid}… {elapsed}s"})
                     await _asyncio.sleep(10)
                     try:
                         async with httpx.AsyncClient(timeout=10.0) as pc:
-                            d = (await pc.get(poll_url)).json()
+                            r = await pc.get(poll_url)
+                        if r.status_code == 404:
+                            # Job vanished mid-poll (server restart or wrong id) — abort, don't loop.
+                            result = f"ERROR: job {jid} disappeared during polling (HTTP 404). Aborting wait."
+                            break
+                        d = r.json()
+                        consecutive_errors = 0
                         status = d.get("status", "unknown")
                         if status in ("completed", "failed", "error", "partial"):
                             result = f"Job {jid}: {status}"
@@ -3873,7 +3913,10 @@ async def _stream_generator(
                                 result += f"\n  Output: {d.get('output_dir', '?')}"
                             break
                     except Exception:
-                        pass
+                        consecutive_errors += 1
+                        if consecutive_errors >= 3:
+                            result = f"ERROR: 3 consecutive poll failures for job {jid}. Aborting wait."
+                            break
             else:
                 result = await _execute_tool(fn_name, fn_args, session_id)
 
