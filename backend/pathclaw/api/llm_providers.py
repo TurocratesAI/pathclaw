@@ -273,7 +273,7 @@ async def stream_round_ollama(
                 "messages": messages,
                 "tools": tools,
                 "stream": True,
-                "options": {"num_ctx": num_ctx},
+                "options": {"num_ctx": num_ctx, "temperature": 0.2},
             },
         ) as resp:
             if resp.status_code != 200:
@@ -301,7 +301,7 @@ async def chat_round_ollama(
                 "messages": messages,
                 "tools": tools,
                 "stream": False,
-                "options": {"num_ctx": num_ctx},
+                "options": {"num_ctx": num_ctx, "temperature": 0.2},
             },
         )
         if resp.status_code != 200:

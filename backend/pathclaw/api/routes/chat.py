@@ -72,26 +72,37 @@ _conversations: dict[str, list[dict]] = {}
 # Memory helpers
 # ---------------------------------------------------------------------------
 
-def _load_memory() -> dict:
-    if MEMORY_FILE.exists():
+def _memory_path(session_id: str) -> Path:
+    """Per-session memory file. Memory is scoped to the session so facts from a
+    UCEC project don't leak into a new BRCA project in a different chat."""
+    return CHATS_DIR / f"{session_id}.memory.json"
+
+
+def _load_memory(session_id: str = "") -> dict:
+    if not session_id:
+        return {}
+    p = _memory_path(session_id)
+    if p.exists():
         try:
-            return json.loads(MEMORY_FILE.read_text())
+            return json.loads(p.read_text())
         except Exception:
             return {}
     return {}
 
 
-def _save_memory(key: str, value: str) -> None:
-    mem = _load_memory()
+def _save_memory(session_id: str, key: str, value: str) -> None:
+    if not session_id:
+        return
+    mem = _load_memory(session_id)
     mem[key] = value
-    MEMORY_FILE.write_text(json.dumps(mem, indent=2))
+    _memory_path(session_id).write_text(json.dumps(mem, indent=2))
 
 
-def _memory_block() -> str:
-    mem = _load_memory()
+def _memory_block(session_id: str = "") -> str:
+    mem = _load_memory(session_id)
     if not mem:
         return ""
-    lines = ["## Persistent Memory\nFacts remembered across sessions:\n"]
+    lines = ["## Session Memory\nFacts you've remembered in THIS session:\n"]
     for k, v in mem.items():
         lines.append(f"- **{k}**: {v}")
     return "\n".join(lines)
@@ -457,7 +468,7 @@ def _build_system_prompt(extra_skill: str = "", session_id: str = "") -> str:
     if summary:
         parts.append(summary)
 
-    mem = _memory_block()
+    mem = _memory_block(session_id)
     if mem:
         parts.append(mem)
 
@@ -505,7 +516,7 @@ def _build_system_prompt(extra_skill: str = "", session_id: str = "") -> str:
 - Do not invent citations. If you don't have a tool-returned result for a claim, either drop the claim or mark it as "unverified".
 - Only ask for user confirmation before: GPU-intensive jobs (training, feature extraction), large downloads (>50 GB), data deletion.
 - After evaluation completes, analyze the metrics and suggest next experiments.
-- Use remember_fact for cross-session global facts (HF token paths, shared dataset IDs).
+- Use remember_fact for facts about THIS session (chosen dataset_id, label column, backbone, training config). Memory is session-scoped — it won't leak into other sessions and it won't see other sessions' memory.
 - Use **write_note** liberally for this session's running log: dataset decisions, job IDs, label files, experiment plans, errors encountered, interim results. Each session is a PhD student's notebook — future-you (after context trimming) relies on it. Write a note at the start of every major phase (data registration, preprocessing, training kick-off) and after every result.
 - Use **write_manuscript** when the user wants to draft/revise a paper. Each session has its own LaTeX project (main.tex + sections + refs.bib). Go from ideation → results → manuscript in the same session: write sections as results come in, cite papers you pulled via search_literature/pubmed_search (add them to refs.bib), then compile_manuscript to get a PDF. Assume a standard article class unless told otherwise.
 - Format numbers and metrics clearly. If a tool call fails, explain and suggest alternatives.
@@ -543,11 +554,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "remember_fact",
-            "description": "Save a fact to persistent memory so it is available in future sessions. Use this for dataset paths, label column names, experiment decisions, download locations, and any other facts that should be remembered long-term.",
+            "description": "Save a fact to THIS session's memory. Memory is session-scoped — a UCEC session's facts do NOT leak into a BRCA session. Use for this-session dataset paths, label columns, chosen backbone, training decisions. Cross-session info (HF tokens, conventions) lives in config, not here.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "key": {"type": "string", "description": "Short descriptive key (e.g. 'tcga_ucec_dataset_id', 'ucec_label_column')"},
+                    "key": {"type": "string", "description": "Short descriptive key (e.g. 'dataset_id', 'label_column', 'backbone')"},
                     "value": {"type": "string", "description": "The fact to remember"},
                 },
                 "required": ["key", "value"],
@@ -558,7 +569,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "recall_facts",
-            "description": "List all facts stored in persistent memory.",
+            "description": "List facts stored in THIS session's memory. Does not see other sessions' memory.",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -1995,19 +2006,23 @@ async def _execute_tool(name: str, arguments: dict[str, Any], session_id: str = 
     base = _get_backend_base()
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            # --- Memory ---
+            # --- Memory (per-session) ---
             if name == "remember_fact":
+                if not session_id:
+                    return "Error: session context unavailable for memory."
                 key = arguments.get("key", "").strip()
                 value = arguments.get("value", "").strip()
                 if not key or not value:
                     return "Error: key and value are required."
-                _save_memory(key, value)
+                _save_memory(session_id, key, value)
                 return f"Remembered: {key} = {value}"
 
             elif name == "recall_facts":
-                mem = _load_memory()
+                if not session_id:
+                    return "Error: session context unavailable."
+                mem = _load_memory(session_id)
                 if not mem:
-                    return "No facts in memory yet."
+                    return "No facts in this session's memory yet."
                 return "\n".join(f"- {k}: {v}" for k, v in mem.items())
 
             elif name == "write_note":
@@ -4321,15 +4336,17 @@ async def serve_manuscript_pdf(session_id: str, filename: str):
 
 
 @router.get("/memory")
-async def get_memory():
-    """Get all persistent memory facts."""
-    return {"memory": _load_memory()}
+async def get_memory(session_id: str = ""):
+    """Get memory facts for a session. Memory is session-scoped — pass session_id."""
+    return {"memory": _load_memory(session_id), "session_id": session_id}
 
 
 @router.delete("/memory/{key}")
-async def delete_memory_key(key: str):
-    """Delete a specific memory key."""
-    mem = _load_memory()
+async def delete_memory_key(key: str, session_id: str = ""):
+    """Delete a specific memory key from the given session."""
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id query param required")
+    mem = _load_memory(session_id)
     mem.pop(key, None)
-    MEMORY_FILE.write_text(json.dumps(mem, indent=2))
+    _memory_path(session_id).write_text(json.dumps(mem, indent=2))
     return {"status": "ok"}
