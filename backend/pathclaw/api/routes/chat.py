@@ -2526,6 +2526,8 @@ async def _execute_tool(name: str, arguments: dict[str, Any], session_id: str = 
 
             elif name == "gdc_job_status":
                 job_id = arguments["job_id"]
+                if not job_id.startswith("dl_"):
+                    job_id = f"dl_{job_id}"
                 resp = await client.get(f"{base}/api/gdc/jobs/{job_id}", timeout=10.0)
                 d = resp.json()
                 status = d.get("status", "unknown")
@@ -2693,12 +2695,15 @@ async def _execute_tool(name: str, arguments: dict[str, Any], session_id: str = 
             elif name == "get_job_status":
                 jid = arguments["job_id"]
                 jtype = arguments.get("job_type", "training")
+                if jtype == "gdc" and not jid.startswith("dl_"):
+                    jid = f"dl_{jid}"
                 route_map = {
                     "preprocess": f"/api/preprocess/{jid}",
                     "training": f"/api/training/{jid}",
                     "eval": f"/api/eval/{jid}",
                     "features": f"/api/features/{jid}",
                     "lora": f"/api/training/lora/{jid}",
+                    "gdc": f"/api/gdc/jobs/{jid}",
                 }
                 route = route_map.get(jtype, f"/api/training/{jid}")
                 resp = await client.get(f"{base}{route}")
@@ -3425,6 +3430,12 @@ async def _execute_tool(name: str, arguments: dict[str, Any], session_id: str = 
                 # Fallback for non-streaming (blocking) endpoint
                 jid = arguments["job_id"]
                 jtype = arguments.get("job_type", "training")
+                # download_gdc returns the job id without the 'dl_' prefix the
+                # queue stores internally, so normalise both forms here.
+                prefix_map = {"gdc": "dl_"}
+                prefix = prefix_map.get(jtype, "")
+                if prefix and not jid.startswith(prefix):
+                    jid = f"{prefix}{jid}"
                 route_map = {
                     "preprocess": f"/api/preprocess/{jid}",
                     "training": f"/api/training/{jid}",
@@ -4175,6 +4186,13 @@ async def _stream_generator(
             if fn_name == "wait_for_job":
                 jid = fn_args.get("job_id", "")
                 jtype = fn_args.get("job_type", "training")
+                # download_gdc returns the job id without the 'dl_' prefix the
+                # queue stores internally, so normalise both forms here.
+                prefix_map = {"gdc": "dl_"}
+                prefix = prefix_map.get(jtype, "")
+                if prefix and jid and not jid.startswith(prefix):
+                    jid = f"{prefix}{jid}"
+                    fn_args["job_id"] = jid
                 route_map = {
                     "preprocess": f"/api/preprocess/{jid}",
                     "training": f"/api/training/{jid}",
