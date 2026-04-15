@@ -6,39 +6,40 @@ on:
   pull_request:
     branches: [master, main]
 
+# Lightweight CI — lint + syntax check only. The full install (torch,
+# cellpose, timm, openslide, mammoth-moe, peft, etc.) is ~3 GB and takes
+# 5-10 min on a fresh runner; it's not the right fit for a public-repo
+# gate. Users run the real smoke tests locally during setup (see README
+# "First experiment in 5 minutes").
 jobs:
-  lint-and-smoke:
+  lint:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11"]
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.11"
           cache: pip
 
-      - name: Install system deps
-        run: sudo apt-get update && sudo apt-get install -y openslide-tools
-
-      - name: Install package
-        working-directory: backend
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]" ruff
+      - name: Install ruff
+        run: pip install ruff
 
       - name: Lint (ruff)
         working-directory: backend
-        run: ruff check pathclaw || true
+        run: ruff check pathclaw
 
-      - name: Smoke test — CLI loads
-        working-directory: backend
-        run: pathclaw --help
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Smoke test — import app
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile all Python modules
         working-directory: backend
-        run: python -c "from pathclaw.api.app import app; print(len(app.routes), 'routes')"
+        run: python -m compileall -q pathclaw
