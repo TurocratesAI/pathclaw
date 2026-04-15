@@ -33,7 +33,7 @@ It is a FastAPI + browser-based research platform. An in-app LLM agent drives th
 ### Core Pipeline
 - **Chat-driven pipeline**: Tell the agent what you want in plain English. It calls the right tools in sequence, confirms before big operations, and explains what it's doing in real time.
 - **MIL classification**: ABMIL, TransMIL, CLAM, DSMIL, RRTMIL, WIKG — with optional MAMMOTH MoE patch embeddings (plugin)
-- **Foundation model feature extraction**: UNI (1024-d), CONCH (512-d), CTransPath (768-d), Virchow (1280-d), Virchow2 (2560-d), GigaPath (1536-d)
+- **Foundation model feature extraction**: any HuggingFace vision backbone by repo id — UNI, CONCH/CONCHv1.5, CTransPath, Virchow/Virchow2, GigaPath, Phikon/Phikon-v2, H-Optimus, Lunit DINO, etc. Pass `backbone=<hf/repo>` to `start_feature_extraction`; dimension is auto-detected. Six presets ship with tuned loaders for gated/SwiGLU/custom-pooling models.
 - **LoRA fine-tuning**: Adapt any backbone to your cohort before re-extracting features
 - **Segmentation**: SegUNet (semantic), HoVer-Net (instance), Cellpose (zero-shot cell detection)
 
@@ -186,7 +186,12 @@ Agent tools: `list_plugins`, `register_plugin`, `update_plugin_config`, `smoke_t
 | `start_feature_extraction` | Extract features via foundation model (runs as detached subprocess) |
 | `cancel_feature_job` | Cancel a running extraction job |
 
-Supported backbones:
+Any HuggingFace vision backbone works — pass its repo id as `backbone` and the loader
+auto-detects the embedding dimension. Six presets ship with tuned weight loaders
+(gated-weights handling, SwiGLU, custom pooling) so the common pathology models
+plug-and-play; everything else loads via a generic `timm` / `AutoModel` path.
+
+Presets with tuned loaders:
 
 | Backbone | Dim | Source |
 |----------|-----|--------|
@@ -196,6 +201,11 @@ Supported backbones:
 | Virchow | 1280 | paige-ai/Virchow |
 | Virchow2 | 2560 | paige-ai/Virchow2 (SwiGLU, CLS+mean pooling) |
 | GigaPath | 1536 | prov-gigapath/prov-gigapath |
+
+Other HF backbones confirmed working via the generic loader: Phikon / Phikon-v2,
+H-Optimus-0, Lunit DINO, Hibou, RudolfV, Kaiko pathology models, and any
+`timm`/`AutoModel`-loadable ViT. Set `backbone="owner/repo"` on
+`start_feature_extraction` and the dim is inferred from the first batch.
 
 ### Training (3)
 | Tool | Description |
