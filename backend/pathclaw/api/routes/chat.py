@@ -69,6 +69,111 @@ _conversations: dict[str, list[dict]] = {}
 
 
 # ---------------------------------------------------------------------------
+# GDC zero-result recovery hints
+#
+# GDC's /files endpoint returns count=0 when filters are *valid JSON* but
+# *semantically wrong* — e.g. `experimental_strategy="Diagnostic Slide"` on a
+# Masked Somatic Mutation search (that strategy applies to slides, not MAFs).
+# Small LLMs often fail to diagnose this; they just stop. The tool itself now
+# returns a structured retry recipe so the model sees exactly which filter is
+# wrong and can re-call search_gdc in the next round.
+# ---------------------------------------------------------------------------
+
+_GDC_DATA_TYPE_FILTERS: dict[str, dict] = {
+    "Slide Image": {
+        "valid_strategies": ["Diagnostic Slide", "Tissue Slide"],
+        "note": "Use experimental_strategy='Diagnostic Slide' for DX FFPE slides (gold standard for MIL), or 'Tissue Slide' for frozen sections.",
+    },
+    "Masked Somatic Mutation": {
+        "valid_strategies": ["WXS"],
+        "note": "MAFs come from whole-exome sequencing. Use experimental_strategy='WXS' OR omit the field entirely. NEVER pass 'Diagnostic Slide' — that's for slides.",
+    },
+    "Clinical Supplement": {
+        "valid_strategies": [],
+        "note": "Clinical supplements accept ONLY project + data_type. Drop experimental_strategy, primary_diagnosis, file_name, and access — they will zero the result set.",
+    },
+    "Gene Expression Quantification": {
+        "valid_strategies": ["RNA-Seq"],
+        "note": "Set experimental_strategy='RNA-Seq' OR omit.",
+    },
+    "Copy Number Segment": {
+        "valid_strategies": ["Genotyping Array"],
+        "note": "Set experimental_strategy='Genotyping Array' OR omit.",
+    },
+    "Methylation Beta Value": {
+        "valid_strategies": ["Methylation Array"],
+        "note": "Set experimental_strategy='Methylation Array' OR omit.",
+    },
+}
+
+
+def _gdc_zero_result_hint(args: dict) -> str:
+    """Return a model-readable retry recipe when search_gdc returned 0 files."""
+    data_type = args.get("data_type") or "Slide Image"
+    project = args.get("project") or "?"
+    strategy = args.get("experimental_strategy")
+    primary_diagnosis = args.get("primary_diagnosis")
+    file_name = args.get("file_name")
+    access = args.get("access")
+
+    lines = [
+        f"Found 0 {data_type} files in {project} for the given filters.",
+        "",
+        "This almost always means a filter is INCOMPATIBLE with the data_type, not that no such files exist.",
+        "Read the recovery recipe below and call search_gdc AGAIN with corrected arguments. Do NOT ask the user — diagnose and retry.",
+        "",
+        f"## Expected filters for data_type='{data_type}'",
+    ]
+
+    spec = _GDC_DATA_TYPE_FILTERS.get(data_type)
+    if spec:
+        lines.append(spec["note"])
+        if spec["valid_strategies"]:
+            lines.append(f"Valid experimental_strategy values: {spec['valid_strategies']} (or omit).")
+        else:
+            lines.append("experimental_strategy is NOT APPLICABLE for this data_type — remove it.")
+    else:
+        lines.append("(No specific recipe for this data_type — try dropping filters one at a time.)")
+
+    # Identify the most likely offending filter
+    bad: list[str] = []
+    if spec:
+        if strategy and strategy not in spec["valid_strategies"] and spec["valid_strategies"]:
+            bad.append(f"experimental_strategy='{strategy}' (expected one of {spec['valid_strategies']} or omit)")
+        if strategy and not spec["valid_strategies"]:
+            bad.append(f"experimental_strategy='{strategy}' (not valid for {data_type} — remove)")
+    if primary_diagnosis and data_type != "Slide Image":
+        bad.append(f"primary_diagnosis={primary_diagnosis!r} (only applies to Slide Image searches — remove for {data_type})")
+    if file_name:
+        bad.append(f"file_name={file_name!r} (remove; too restrictive for a first pass)")
+
+    if bad:
+        lines.append("")
+        lines.append("## Likely offending filter(s) in your call")
+        for b in bad:
+            lines.append(f"- {b}")
+
+    # Concrete retry
+    retry = {"project": project, "data_type": data_type}
+    if spec and spec["valid_strategies"]:
+        retry["experimental_strategy"] = spec["valid_strategies"][0]
+    if data_type == "Slide Image":
+        if not strategy:
+            retry["experimental_strategy"] = "Diagnostic Slide"
+        if primary_diagnosis:
+            retry["primary_diagnosis"] = primary_diagnosis
+
+    lines += [
+        "",
+        "## RETRY NOW with these arguments",
+        f"search_gdc({json.dumps(retry)})",
+        "",
+        "If that still returns 0, drop filters one at a time in this order: experimental_strategy → primary_diagnosis → file_name → access. Keep data_type and project; they are required.",
+    ]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Memory helpers
 # ---------------------------------------------------------------------------
 
@@ -2181,6 +2286,13 @@ async def _execute_tool(name: str, arguments: dict[str, Any], session_id: str = 
                 d = resp.json()
                 total = d.get("total", 0)
                 files = d.get("files", [])
+
+                # Zero-result recovery: GDC queries fail silently when the data_type
+                # is incompatible with a filter (e.g. `experimental_strategy=Diagnostic
+                # Slide` on a MAF search). Return a structured retry hint so the LLM
+                # can self-correct on the next round instead of giving up.
+                if total == 0:
+                    return _gdc_zero_result_hint(arguments)
 
                 # Auto-paginate: if more files exist than retrieved, fetch all IDs
                 all_ids: list[str] = [fi["file_id"] for fi in files]
