@@ -1,0 +1,1 @@
+"""PathClaw — Computational Pathology Backend."""

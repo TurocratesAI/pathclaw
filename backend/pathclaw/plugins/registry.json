@@ -1,0 +1,53 @@
+{
+  "mammoth": {
+    "name": "MAMMOTH MoE-LoRA",
+    "kind": "patch_embed",
+    "import_path": "pathclaw.plugins.mammoth:build",
+    "default_config": {
+      "num_experts": 30,
+      "num_slots": 10,
+      "num_heads": 16,
+      "share_lora_weights": true,
+      "auto_rank": true,
+      "dropout": 0.1,
+      "temperature": 1.0
+    },
+    "applies_to": ["mil"],
+    "source": "pip:mammoth-moe",
+    "description": "Replaces the input Linear in MIL models with a MoE-LoRA patch embed (num_experts × num_slots slots).",
+    "enabled_default": false,
+    "builtin": true
+  },
+  "cellpose": {
+    "name": "Cellpose nuclei/cell segmentation",
+    "kind": "method",
+    "import_path": "pathclaw.plugins.cellpose:build",
+    "default_config": {
+      "model_type": "cpsam",
+      "diameter": null,
+      "flow_threshold": 0.4,
+      "cellprob_threshold": 0.0,
+      "niter": 0,
+      "channels": [0, 0],
+      "min_size": 15,
+      "tile_norm": true,
+      "gpu": true
+    },
+    "config_schema": {
+      "model_type": {"type": "enum", "choices": ["cpsam", "nuclei", "cyto3"], "help": "Pretrained backbone. 'cpsam' (default) is the SAM-based generalist; 'nuclei' is H&E-biased; 'cyto3' for brightfield cytoplasm."},
+      "diameter": {"type": "number_or_null", "help": "Target object diameter in pixels at the patch's resolution. null = auto-estimate per image."},
+      "flow_threshold": {"type": "float", "min": 0.0, "max": 3.0, "help": "Flow consistency threshold. Lower values reject more masks (stricter)."},
+      "cellprob_threshold": {"type": "float", "min": -6.0, "max": 6.0, "help": "Cell probability threshold. Raise (e.g. 1.0) to reject dim/ambiguous detections."},
+      "niter": {"type": "int", "min": 0, "help": "Dynamics iterations. 0 = auto. Raise (e.g. 2000) for large or crowded objects."},
+      "channels": {"type": "int_pair", "help": "[cyto_channel, nucleus_channel]. 0=grayscale, 1=R, 2=G, 3=B. [0,0] treats input as grayscale."},
+      "min_size": {"type": "int", "min": 0, "help": "Minimum mask area in pixels. Smaller masks are discarded."},
+      "tile_norm": {"type": "bool", "help": "Per-tile (128px) normalization — recommended for WSI patches with uneven staining."},
+      "gpu": {"type": "bool", "help": "Use CUDA when available."}
+    },
+    "applies_to": ["segmentation"],
+    "source": "pip:cellpose",
+    "description": "Pretrained cellpose model for nuclei / cell instance segmentation. Runs at inference time over patches of a dataset; outputs per-patch instance masks and counts.",
+    "enabled_default": false,
+    "builtin": true
+  }
+}

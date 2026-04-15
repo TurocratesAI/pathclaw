@@ -1,0 +1,82 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment / secrets
+.env
+.env.local
+*.env
+
+# PathClaw runtime data (lives in ~/.pathclaw, not in repo)
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Slide files
+*.svs
+*.tiff
+*.tif
+*.ndpi
+*.mrxs
+*.vsi
+*.scn
+*.bif
+*.qptiff
+*.ome.tiff
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# IDE
+.idea/
+.vscode/
+.claude/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+
+# PathClaw session / runtime artifacts (should never enter repo)
+experiments/
+features/
+jobs/
+uploads/
+sessions/
+folders/
+telegram.log
+server.port
+
+# Credentials
+*.key
+*.pem
+credentials.json
+secrets.json
+
+# Generated PDFs and binary artifacts (except committed docs/)
+*.aux
+*.synctex.gz
+*.out
+*.toc

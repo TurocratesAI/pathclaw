@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  lint-and-smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install system deps
+        run: sudo apt-get update && sudo apt-get install -y openslide-tools
+
+      - name: Install package
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" ruff
+
+      - name: Lint (ruff)
+        working-directory: backend
+        run: ruff check pathclaw || true
+
+      - name: Smoke test — CLI loads
+        working-directory: backend
+        run: pathclaw --help
+
+      - name: Smoke test — import app
+        working-directory: backend
+        run: python -c "from pathclaw.api.app import app; print(len(app.routes), 'routes')"

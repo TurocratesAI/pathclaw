@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use PathClaw in your research, please cite it as below."
+title: "PathClaw: Computational Pathology Platform with Agentic Workflows"
+abstract: >
+  PathClaw is a research platform for computational pathology that combines
+  whole-slide image preprocessing, multiple-instance learning model training,
+  genomic analysis, and an in-app LLM agent with tool use. It supports gated
+  HuggingFace backbones (UNI, CONCH, Virchow, GigaPath), MIL methods (ABMIL,
+  CLAM, TransMIL, DSMIL, RRTMIL, WIKG), TCGA/GDC integration, cBioPortal
+  queries, and per-session manuscript authoring.
+type: software
+version: "0.3.0"
+date-released: "2026-04-15"
+authors:
+  - family-names: Lalwani
+    given-names: Devansh
+    email: devansh@turocrates.ai
+repository-code: "https://github.com/devanshlalwani/PathClaw"
+license: MIT
+keywords:
+  - computational pathology
+  - whole slide imaging
+  - multiple instance learning
+  - TCGA
+  - genomics
+  - LLM agent
