@@ -6,7 +6,7 @@
 
 ## About
 
-PathClaw is a viberesearching environment for medical imaging — the open counterpart to closed, vertical "Claw"-style clinical AI stacks. The first release focuses on **computational pathology**: WSI preprocessing, multiple-instance learning, genomic analysis, and per-session manuscript authoring. Future releases extend the same agent-driven workflow to radiology and other medical imaging modalities.
+PathClaw is a viberesearching environment for medical imaging. The first release focuses on **computational pathology**: WSI preprocessing, multiple-instance learning, genomic analysis, and per-session manuscript authoring. Future releases extend the same agent-driven workflow to radiology and other medical imaging modalities.
 
 It is a FastAPI + browser-based research platform. An in-app LLM agent drives the full pipeline — TCGA download → WSI preprocessing → feature extraction → MIL training → evaluation → genomic analysis — through a chat interface, invoking 66 typed tools and 15 keyword-triggered skill modules. You describe the experiment in plain English; the agent runs it, confirms before destructive steps, and writes results back into a per-session workspace you control.
 
