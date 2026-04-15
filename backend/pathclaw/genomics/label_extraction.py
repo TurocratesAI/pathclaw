@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 from xml.etree import ElementTree as ET
 
-from pathclaw.genomics.parsers import _load_all_mafs, _open_maybe_gz, NONSYNONYMOUS_CLASSES
+from pathclaw.genomics.parsers import _load_all_mafs, NONSYNONYMOUS_CLASSES
 
 logger = logging.getLogger("pathclaw.genomics")
 

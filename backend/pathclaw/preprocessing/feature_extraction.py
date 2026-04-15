@@ -514,7 +514,7 @@ def _extract_slide_features(
     current batch.
     """
     import PIL.Image
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import ThreadPoolExecutor
 
     try:
         import openslide

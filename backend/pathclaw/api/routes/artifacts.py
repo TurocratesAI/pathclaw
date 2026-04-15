@@ -48,7 +48,8 @@ async def list_artifacts(session_id: str = ""):
 async def export_experiment(experiment_id: str):
     """Download the full experiment (model.pth + config.json + metrics.json + history + plots + logs) as a zip."""
     from fastapi.responses import StreamingResponse
-    import io, zipfile
+    import io
+    import zipfile
     exp_dir = EXPERIMENTS_DIR / experiment_id
     if not exp_dir.exists() or not exp_dir.is_dir():
         raise HTTPException(status_code=404, detail=f"Experiment {experiment_id} not found")

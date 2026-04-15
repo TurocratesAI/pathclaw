@@ -52,3 +52,13 @@ pathclaw = "pathclaw.cli:main"
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+# Keep the CI gate focused on real bugs. F-codes catch undefined names /
+# syntax; E9xx are runtime errors. Skip stylistic noise (unused locals,
+# semicolons, late imports) — those are polish, not correctness.
+select = ["F", "E9"]
+ignore = [
+    "F401",  # unused imports (often optional-dep probes)
+    "F841",  # unused locals (intentional e.g. future-use bindings)
+]

@@ -78,7 +78,6 @@ class _SegDataset(torch.utils.data.Dataset):
         transform=None,
     ) -> None:
         import json as _json
-        from PIL import Image as _PIL
 
         self.patch_size = patch_size
         self.transform = transform
@@ -464,7 +463,7 @@ def _save_sample_predictions(
     """Save side-by-side original | GT | predicted mask PNGs."""
     try:
         import numpy as np
-        from PIL import Image as _PIL, ImageDraw as _Draw
+        from PIL import Image as _PIL
 
         pred_dir = exp_dir / "predictions"
         pred_dir.mkdir(exist_ok=True)

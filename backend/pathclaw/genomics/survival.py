@@ -207,7 +207,7 @@ def run_survival_analysis(
             os_data[patient] = os_result
 
     if not os_data:
-        return f"Could not compute overall survival for any patient. Check clinical fields."
+        return "Could not compute overall survival for any patient. Check clinical fields."
 
     # Load labels for stratification if available
     labels: dict[str, str] = {}
@@ -250,7 +250,6 @@ def _run_km_lifelines(
     out_dir: Path,
 ) -> str:
     """Run KM analysis using lifelines library."""
-    import numpy as np
     from lifelines import KaplanMeierFitter
     from lifelines.statistics import logrank_test
 
@@ -309,7 +308,7 @@ def _run_km_lifelines(
                 event_observed_A=np.array([d[1] for d in g1_data]),
                 event_observed_B=np.array([d[1] for d in g2_data]),
             )
-            lines.append(f"### Log-rank Test")
+            lines.append("### Log-rank Test")
             lines.append(f"  p-value: **{result.p_value:.2e}**")
             lines.append(f"  test statistic: {result.test_statistic:.2f}")
             significance = "significant" if result.p_value < 0.05 else "not significant"
@@ -327,7 +326,7 @@ def _run_km_lifelines(
             result = multivariate_logrank_test(
                 np.array(all_times), np.array(all_groups), np.array(all_events),
             )
-            lines.append(f"### Multivariate Log-rank Test")
+            lines.append("### Multivariate Log-rank Test")
             lines.append(f"  p-value: **{result.p_value:.2e}**")
             lines.append(f"  test statistic: {result.test_statistic:.2f}")
 
@@ -360,7 +359,6 @@ def _run_km_lifelines(
         # Unstratified — overall survival
         times = [d[0] for d in os_data.values()]
         events = [d[1] for d in os_data.values()]
-        import numpy as np
 
         kmf = KaplanMeierFitter()
         kmf.fit(np.array(times), np.array(events), label="Overall")

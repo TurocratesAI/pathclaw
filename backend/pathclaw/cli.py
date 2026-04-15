@@ -93,7 +93,7 @@ def onboard():
 
     existing_gdc = config.get("gdc_token", "")
     if existing_gdc:
-        print(f"  ✅ GDC token already configured.")
+        print("  ✅ GDC token already configured.")
     else:
         gdc_token = input("  Enter GDC token (or press Enter to skip): ").strip()
         if gdc_token:
@@ -109,7 +109,7 @@ def onboard():
     print("-" * 40)
     data_dir = config.get("data_dir", str(PATHCLAW_DIR))
     print(f"  Current data directory: {data_dir}")
-    new_dir = input(f"  Change data directory? (Enter to keep): ").strip()
+    new_dir = input("  Change data directory? (Enter to keep): ").strip()
     if new_dir:
         config["data_dir"] = new_dir
         Path(new_dir).mkdir(parents=True, exist_ok=True)

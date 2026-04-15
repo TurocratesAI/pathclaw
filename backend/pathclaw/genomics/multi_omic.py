@@ -8,7 +8,6 @@ training or downstream analysis.
 from __future__ import annotations
 
 import csv
-import json
 import logging
 import os
 from collections import defaultdict
@@ -277,7 +276,7 @@ def build_multi_omic_labels(
 
     # Summary
     lines = [
-        f"## Multi-Omic Matrix",
+        "## Multi-Omic Matrix",
         f"- **Patients**: {len(all_data)}",
         f"- **Features**: {len(unique_columns)}",
         f"- **Matrix size**: {len(all_data)} × {len(unique_columns)}",

@@ -241,7 +241,7 @@ def _append_session_note(session_id: str, topic: str, content: str) -> str:
     topic_clean = topic.strip() or "note"
     block = f"\n### {topic_clean}  _{ts}_\n{content.strip()}\n"
     if not p.exists():
-        header = f"# Session Notebook\n\nRunning log of decisions, findings, and context for this session.\n"
+        header = "# Session Notebook\n\nRunning log of decisions, findings, and context for this session.\n"
         p.write_text(header + block)
     else:
         with p.open("a") as f:
@@ -561,6 +561,54 @@ def _load_skills_summary() -> str:
 # System prompt
 # ---------------------------------------------------------------------------
 
+_TOOL_GROUPS = [
+    ("GDC / TCGA", {"search_gdc", "download_gdc", "gdc_job_status"}),
+    ("Datasets", {"register_dataset", "list_datasets", "get_dataset_info", "delete_dataset", "attach_folder"}),
+    ("Preprocessing", {"start_preprocessing", "get_preprocess_status", "preview_tissue_segmentation"}),
+    ("Features", {"start_feature_extraction", "list_features"}),
+    ("Training", {"start_training", "list_experiments", "get_experiment_info", "resume_training"}),
+    ("Evaluation", {"start_evaluation", "get_eval_metrics", "get_eval_predictions", "make_plot", "list_artifacts", "attach_figure_to_manuscript"}),
+    ("Jobs", {"get_job_status", "wait_for_job", "list_jobs", "cancel_job", "get_job_logs"}),
+    ("Genomics", {"parse_genomic_file", "query_mutations", "compute_tmb", "extract_labels_from_genomic", "query_cbioportal", "run_survival_analysis", "build_multi_omic_labels", "generate_oncoplot", "parse_gene_expression", "biomarker_discovery"}),
+    ("Python / notes", {"run_python", "write_note", "read_notes", "remember_fact", "recall_facts"}),
+    ("Literature", {"deep_literature_review", "search_literature", "pubmed_search", "fetch_url", "get_paper_citations"}),
+    ("Manuscript", {"write_manuscript", "compile_manuscript", "list_manuscript_files", "read_manuscript_file"}),
+    ("Plugins", {"list_plugins", "install_plugin", "update_plugin_config", "smoke_test_plugin", "run_cellpose_segmentation", "clone_repo"}),
+    ("Telegram", {"telegram_status"}),
+    ("System", {"get_system_status"}),
+]
+
+
+def _tools_catalog() -> str:
+    """Build an inline tool catalog for the system prompt.
+
+    Small models (gemma4:e4b) sometimes hallucinate tool names when relying only
+    on the function-calling schema surface. Injecting the canonical names into
+    the system prompt makes them lexically present every round so the model
+    copies rather than invents."""
+    by_name = {t.get("function", {}).get("name", ""): t.get("function", {}).get("description", "") for t in TOOLS}
+    lines = ["## Tool Catalog (call by EXACT name — do not invent new ones)"]
+    seen: set[str] = set()
+    for group_name, names in _TOOL_GROUPS:
+        rows = []
+        for n in sorted(names):
+            if n in by_name:
+                desc = (by_name[n] or "").split(".")[0].strip()[:120]
+                rows.append(f"- `{n}` — {desc}")
+                seen.add(n)
+        if rows:
+            lines.append(f"\n**{group_name}**")
+            lines.extend(rows)
+    other = sorted(set(by_name) - seen)
+    if other:
+        lines.append("\n**Other**")
+        for n in other:
+            desc = (by_name[n] or "").split(".")[0].strip()[:120]
+            lines.append(f"- `{n}` — {desc}")
+    lines.append("\nIf a name you want isn't in this list, IT DOES NOT EXIST. Pick the closest one above; do not prefix with namespaces like `google:` or `ds_api/`.")
+    return "\n".join(lines)
+
+
 def _build_system_prompt(extra_skill: str = "", session_id: str = "") -> str:
     """Load core workspace files + optional active skill into the system prompt."""
     parts = []
@@ -568,6 +616,7 @@ def _build_system_prompt(extra_skill: str = "", session_id: str = "") -> str:
         fpath = WORKSPACE_DIR / fname
         if fpath.exists():
             parts.append(fpath.read_text())
+    parts.append(_tools_catalog())
 
     summary = _load_skills_summary()
     if summary:
@@ -3681,7 +3730,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], session_id: str = 
                 try:
                     from pathclaw.plugins import resolve_builder
                     import torch as _torch
-                    import importlib, sys as _sys
+                    import sys as _sys
                     # Invalidate cached workspace modules so edits take effect
                     for mod_name in list(_sys.modules):
                         if mod_name.startswith("workspace."):
@@ -3776,8 +3825,8 @@ async def _execute_tool(name: str, arguments: dict[str, Any], session_id: str = 
                     f"\n\nDid you mean: {', '.join(close)}? "
                     f"CALL THE CORRECT TOOL NAME ON YOUR NEXT TURN — do not retry '{name}'."
                 ) if close else (
-                    f"\n\nRetry with one of the valid tool names instead. "
-                    f"Use list_artifacts or search_gdc / download_gdc / register_dataset as appropriate."
+                    "\n\nRetry with one of the valid tool names instead. "
+                    "Use list_artifacts or search_gdc / download_gdc / register_dataset as appropriate."
                 )
                 return f"ERROR: Unknown tool '{name}'.{hint}"
 
@@ -4428,7 +4477,8 @@ async def serve_manuscript_figure(session_id: str, filename: str):
 async def export_manuscript(session_id: str):
     """Download the full manuscript project (LaTeX sources + figures + compiled PDF if present) as a zip."""
     from fastapi.responses import StreamingResponse
-    import io, zipfile
+    import io
+    import zipfile
     root = _manuscript_dir(session_id)
     if not any(root.iterdir()):
         raise HTTPException(status_code=404, detail="Manuscript project is empty.")

@@ -7,7 +7,6 @@ groups defined by MIL model predictions or known labels.
 from __future__ import annotations
 
 import csv
-import json
 import logging
 import os
 from collections import Counter, defaultdict
@@ -131,7 +130,7 @@ def mutation_enrichment(
 
     # Format output
     lines = [
-        f"## Mutation Enrichment Analysis",
+        "## Mutation Enrichment Analysis",
         f"- **Groups**: {', '.join(f'{g} (n={group_sizes[g]})' for g in group_names)}",
         f"- **Genes tested**: {len(enrichment)}",
         "",
@@ -257,7 +256,7 @@ def attention_gene_correlation(
 
     # For each gene, compare mean attention between mutated vs wild-type
     lines = [
-        f"## Attention-Mutation Correlation",
+        "## Attention-Mutation Correlation",
         f"- **Slides with attention scores**: {len(slide_attention)}",
         f"- **Patients with mutations**: {len(patient_genes)}",
         f"- **Genes analyzed**: {len(target_genes)}",

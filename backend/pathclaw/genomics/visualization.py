@@ -159,7 +159,6 @@ def _render_oncoplot(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
-    import numpy as np
 
     n_genes = len(top_genes)
     n_samples = len(all_samples)

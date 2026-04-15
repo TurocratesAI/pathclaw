@@ -6,12 +6,8 @@ does not need to write ad-hoc pandas code for common genomic operations.
 
 from __future__ import annotations
 
-import csv
 import gzip
-import json
 import logging
-import os
-import re
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional

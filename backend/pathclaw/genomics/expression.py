@@ -321,13 +321,13 @@ def compute_cohort_expression(
     gene_stats.sort(key=lambda g: g["mean"], reverse=True)
 
     lines = [
-        f"## Cohort Expression Summary",
+        "## Cohort Expression Summary",
         f"- **Samples**: {n_samples}",
         f"- **Genes analyzed**: {len(gene_stats)}",
     ]
 
     if gene_list:
-        lines.append(f"\n### Queried Genes")
+        lines.append("\n### Queried Genes")
         for gs in gene_stats[:len(gene_list)]:
             name = gs["gene_name"] or gs["gene_id"]
             lines.append(
@@ -335,7 +335,7 @@ def compute_cohort_expression(
                 f"non-zero={gs['nonzero']}/{gs['n_samples']}"
             )
     else:
-        lines.append(f"\n### Top 20 Expressed Genes (by mean)")
+        lines.append("\n### Top 20 Expressed Genes (by mean)")
         for gs in gene_stats[:20]:
             name = gs["gene_name"] or gs["gene_id"]
             lines.append(f"  **{name}**: mean={gs['mean']:,.1f}, std={gs['std']:,.1f}")

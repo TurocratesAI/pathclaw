@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import os
-import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -119,7 +118,7 @@ async def all_jobs(session_id: str = ""):
     not bleed jobs across sessions.
     """
     import json as _json
-    from pathclaw.api.routes import training as _tr, evaluation as _ev, preprocess as _pp, features as _ft, gdc as _gdc
+    from pathclaw.api.routes import training as _tr, evaluation as _ev, preprocess as _pp
 
     jobs = []
 
@@ -236,7 +235,7 @@ async def status():
         gpu_count = torch.cuda.device_count() if gpu_available else 0
     except ImportError:
         # torch not installed in this env — fall back to nvidia-smi
-        import subprocess, re
+        import subprocess
         try:
             out = subprocess.check_output(
                 ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],

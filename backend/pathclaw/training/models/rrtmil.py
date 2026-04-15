@@ -10,7 +10,6 @@ each region, then apply global attention across region summaries.
 
 from __future__ import annotations
 
-import math
 
 import torch
 import torch.nn as nn

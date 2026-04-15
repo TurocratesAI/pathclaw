@@ -158,7 +158,7 @@ def finetune_backbone_lora(config: dict, job_status: Optional[dict] = None) -> d
         )
 
     from pathclaw.preprocessing.feature_extraction import (
-        BACKBONE_REGISTRY, _load_backbone, _get_transform,
+        BACKBONE_REGISTRY, _load_backbone,
     )
 
     backbone_name = config.get("backbone", "uni")
