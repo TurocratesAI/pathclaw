@@ -79,6 +79,13 @@ _conversations: dict[str, list[dict]] = {}
 # wrong and can re-call search_gdc in the next round.
 # ---------------------------------------------------------------------------
 
+# Last search_gdc result per session, used by download_gdc to resolve
+# filter_pattern + max_count without forcing the model to copy UUIDs out of
+# a long text blob. Values are the raw file records: [{file_id, file_name,
+# file_size}, ...].
+_GDC_SEARCH_CACHE: dict[str, list[dict]] = {}
+
+
 _GDC_DATA_TYPE_FILTERS: dict[str, dict] = {
     "Slide Image": {
         "valid_strategies": ["Diagnostic Slide", "Tissue Slide"],
@@ -934,20 +941,23 @@ TOOLS = [
         "function": {
             "name": "download_gdc",
             "description": (
-                "Download GDC/TCGA files by file_id list. Runs as a background job — returns job_id immediately. "
-                "Poll gdc_job_status for progress. No external tools required. "
-                "For large cohorts (>50 slides) first use search_gdc to confirm the count, then pass all file_ids here. "
-                "Downloaded files are saved to output_dir and can then be registered as a dataset."
+                "Download GDC/TCGA files. Runs as a background job — returns job_id immediately. "
+                "Two ways to pick files: (A) pass explicit file_ids (exact 36-char UUIDs from a prior search_gdc), OR "
+                "(B) pass filter_pattern and/or max_count and it will resolve against the LAST search_gdc result in this session. "
+                "Option B is preferred for small models — you never have to copy UUIDs. "
+                "Poll gdc_job_status for progress. Downloaded files land in output_dir and can be registered as a dataset."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "file_ids": {"type": "array", "items": {"type": "string"}, "description": "List of GDC file UUIDs to download"},
+                    "file_ids": {"type": "array", "items": {"type": "string"}, "description": "List of GDC file UUIDs (36-char hex+dashes). Omit if using filter_pattern."},
+                    "filter_pattern": {"type": "string", "description": "Glob/substring applied to file_name on the LAST search_gdc result (e.g. '*-01Z-*DX*' for diagnostic FFPE slides). Bare substrings are auto-wrapped in '*'."},
+                    "max_count": {"type": "integer", "description": "Cap the number of files picked (e.g. 10 for a quick pilot)."},
                     "output_dir": {"type": "string", "description": "Local directory to save files. Default: ~/.pathclaw/downloads/{project}"},
                     "project": {"type": "string", "description": "Project name used for default output_dir (e.g. 'tcga-ucec')"},
                     "max_concurrent": {"type": "integer", "description": "Parallel download streams (default: 4)", "default": 4},
                 },
-                "required": ["file_ids"],
+                "required": [],
             },
         },
     },
@@ -2335,6 +2345,9 @@ async def _execute_tool(name: str, arguments: dict[str, Any], session_id: str = 
                 d = resp.json()
                 total = d.get("total", 0)
                 files = d.get("files", [])
+                # Cache so download_gdc can resolve filter_pattern without the
+                # model having to copy UUIDs out of a long text blob.
+                _GDC_SEARCH_CACHE[session_id or "__global__"] = list(files)
 
                 # Zero-result recovery: GDC queries fail silently when the data_type
                 # is incompatible with a filter (e.g. `experimental_strategy=Diagnostic
@@ -2380,6 +2393,32 @@ async def _execute_tool(name: str, arguments: dict[str, Any], session_id: str = 
                 return "\n".join(lines)
 
             elif name == "download_gdc":
+                # Resolve file_ids from the last search_gdc cache if the model
+                # passed a filter_pattern / max_count instead of explicit ids.
+                # This lets gemma4 avoid copying UUIDs out of a text blob.
+                file_ids = arguments.get("file_ids") or []
+                pattern = arguments.get("filter_pattern")
+                max_count = arguments.get("max_count")
+                if (not file_ids or pattern) and (pattern or max_count):
+                    import fnmatch
+                    cached = _GDC_SEARCH_CACHE.get(session_id or "__global__", [])
+                    if not cached:
+                        return (
+                            "ERROR: download_gdc needs a prior search_gdc in this session "
+                            "before filter_pattern/max_count can resolve. Call search_gdc first."
+                        )
+                    matched = cached
+                    if pattern:
+                        pat = pattern if any(c in pattern for c in "*?[]") else f"*{pattern}*"
+                        matched = [fi for fi in cached if fnmatch.fnmatch(fi.get("file_name", ""), pat)]
+                    if max_count:
+                        matched = matched[: int(max_count)]
+                    if not matched:
+                        return f"ERROR: filter_pattern={pattern!r} matched 0 of {len(cached)} cached files."
+                    file_ids = [fi["file_id"] for fi in matched]
+                    arguments = {**arguments, "file_ids": file_ids}
+                    arguments.pop("filter_pattern", None)
+                    arguments.pop("max_count", None)
                 resp = await client.post(f"{base}/api/gdc/download", json=arguments, timeout=30.0)
                 d = resp.json()
                 return (

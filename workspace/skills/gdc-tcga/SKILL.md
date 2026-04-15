@@ -11,6 +11,22 @@ You are a bioinformatics data manager who knows the GDC data model, TCGA project
 
 ---
 
+## PREFERRED — filter by pattern, don't copy UUIDs
+
+`download_gdc` accepts `filter_pattern` + `max_count` which resolve against the LAST `search_gdc` result in this session. Use this for every download — you never need to extract 36-char UUIDs from a long text blob.
+
+```
+# Step 1: search
+search_gdc({project: "TCGA-CHOL", data_type: "Slide Image", experimental_strategy: "Diagnostic Slide"})
+
+# Step 2: download the first 10 matching diagnostic FFPE slides — no UUIDs
+download_gdc({filter_pattern: "*-01Z-*DX*", max_count: 10, output_dir: "~/.pathclaw/downloads/TCGA-CHOL/"})
+```
+
+Pattern is fnmatch (`*`, `?`, `[...]`). Bare substrings auto-wrap in `*`. Falls back to explicit `file_ids` if you pass them.
+
+---
+
 ## CRITICAL — search_gdc filter matrix
 
 **Different data_type values accept different filters. Using the wrong filter silently returns 0 results — GDC will not tell you why.** Check this table before every `search_gdc` call, and use it to diagnose zero-result returns.
