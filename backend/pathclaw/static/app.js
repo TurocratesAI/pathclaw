@@ -443,7 +443,7 @@
                         <div id="ti-${sid}" style="display:${isOpen ? 'block' : 'none'}" class="tree-item-body">
                             ${s.config?.mil_method ? `<div class="tree-leaf"><span class="tree-meta">${s.config.mil_method} · ${s.config.feature_backbone || '—'}</span></div>` : ''}
                             <div class="tree-leaf tree-action" onclick="viewExperiment('${a.experiment_id}')"><span class="tree-exp-icon">📈</span>View plots</div>
-                            <div class="tree-leaf tree-action" onclick="document.querySelector('.ws-tab[data-t=\\"logs\\"]').click();setTimeout(()=>loadLog('${a.experiment_id}'),100)"><span class="tree-icon-sm">📄</span>View logs</div>
+                            <div class="tree-leaf tree-action" onclick="viewLogs('${a.experiment_id}')"><span class="tree-icon-sm">📄</span>View logs</div>
                             <div class="tree-leaf tree-action" onclick="window.location.href='${API}/api/artifacts/${a.experiment_id}/export'"><span class="tree-icon-sm">📦</span>Export .zip (model + config + plots)</div>
                         </div>
                     </div>`;
@@ -473,6 +473,13 @@
             activeJobId = jobId;
             sessionStorage.setItem('activeJobId', jobId);
             document.querySelector('.ws-tab[data-t="plots"]').click();
+        }
+
+        function viewLogs(jobId) {
+            activeJobId = jobId;
+            sessionStorage.setItem('activeJobId', jobId);
+            const tab = document.querySelector('.ws-tab[data-t="logs"]');
+            if (tab) tab.click();
         }
 
         // === Job polling ===
@@ -581,6 +588,9 @@
             d.innerHTML = `<div class="who">${who}</div>${type === 'agent' ? formatMd(html) : html.replace(/\n/g, '<br>')}${toolHtml}`;
             c.appendChild(d); c.scrollTop = c.scrollHeight;
             if (type === 'agent') _renderMath(d);
+            d.querySelectorAll('img').forEach(img => {
+                img.onclick = () => { if (typeof _showLightbox === 'function') _showLightbox(img.src); };
+            });
         }
         function showTyping() {
             const d = document.createElement('div'); d.className = 'typing'; d.id = 'typingIndicator';
@@ -1859,7 +1869,8 @@
         async function renderPlots() {
             wsEl.className = 'ws-content fill';
             wsEl.innerHTML = '<div style="width:100%"><p style="color:var(--text-3);font-size:13px">Loading...</p></div>';
-            const r = await fetch(`${API}/api/artifacts`).catch(() => null);
+            const sidQ = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+            const r = await fetch(`${API}/api/artifacts${sidQ}`).catch(() => null);
             const arts = r?.ok ? (await r.json()).artifacts || [] : [];
             if (!arts.length) {
                 wsEl.innerHTML = '<div class="ws-empty"><h3>No experiments yet</h3><p>Train a model to see evaluation results here.</p></div>';
@@ -2008,7 +2019,8 @@
         async function renderLogs() {
             wsEl.className = 'ws-content logs-mode';
             // Get artifacts to build selector
-            const r = await fetch(`${API}/api/artifacts`).catch(() => null);
+            const sidQ = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+            const r = await fetch(`${API}/api/artifacts${sidQ}`).catch(() => null);
             const arts = r?.ok ? (await r.json()).artifacts || [] : [];
             if (!arts.length) {
                 wsEl.innerHTML = '<div class="ws-empty"><h3>No experiments yet</h3><p>Train a model to see logs here.</p></div>';
