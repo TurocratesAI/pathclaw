@@ -39,7 +39,7 @@ PLAN_SCHEMA: dict[str, Any] = {
                     # bug during grammar-constrained decoding of free-text
                     # fields (ollama issues #15502, #15260).
                     "title": {"type": "string", "minLength": 3, "maxLength": 80},
-                    "description": {"type": "string", "minLength": 3, "maxLength": 240},
+                    "description": {"type": "string", "minLength": 3, "maxLength": 500},
                     "pause_after": {"type": "boolean"},
                 },
                 "required": ["title", "description"],
@@ -50,18 +50,38 @@ PLAN_SCHEMA: dict[str, Any] = {
 }
 
 
-PLANNER_SYSTEM = """You convert a user's multi-step request into an ordered JSON task plan.
+__planner_system_BASE = """You convert a user's multi-step request into an ordered JSON task plan.
 
 Rules:
 - 3-10 tasks. Each task is one logical chunk of work (typically 1-3 tool calls).
 - Titles: short imperative, <60 chars (e.g. "Download CHOL slides", "Train ABMIL 5-fold").
-- Descriptions: one sentence stating the concrete outcome or tools involved.
+- Descriptions: one sentence stating the concrete outcome AND the EXACT tool name(s)
+  that will be used. Pick tool names ONLY from the allowed list below — never invent
+  new names, never prefix with a namespace (no `gemma:`, no `path_to_tool/`).
 - Preserve the user's order exactly. Do NOT add steps the user didn't ask for.
 - Set pause_after=true ONLY when the user explicitly wants to review results
   before proceeding (e.g. "show me the plan", "confirm X before continuing").
 - Default pause_after=false so the agent auto-advances through the plan.
 
 Return ONLY the JSON object matching the schema — no prose, no code fences."""
+
+
+def _build_planner_system(tool_names: list[str] | None) -> str:
+    """Inject the exact tool catalog into the planner's system prompt.
+
+    The executor reads the plan's descriptions verbatim at the top of every
+    turn's system prompt. By making the planner reference real tool names in
+    those descriptions, we give the executor a concrete anchor ("call
+    list_artifacts") that's much harder to hallucinate away from (`gemma:list_files`).
+    """
+    if not tool_names:
+        return __planner_system_BASE
+    catalog = ", ".join(sorted(set(tool_names)))
+    return (
+        __planner_system_BASE
+        + "\n\nALLOWED TOOL NAMES (use exactly, nothing else):\n"
+        + catalog
+    )
 
 
 _NUMBERED_STEP_RE = re.compile(r"(?m)^\s*\d+[.)]\s+\S")
@@ -103,7 +123,7 @@ def _clean_tasks(raw: Any) -> list[dict]:
         if not isinstance(t, dict):
             continue
         title = (t.get("title") or "").strip().lstrip(":").strip()[:80]
-        desc = (t.get("description") or "").strip().lstrip(":").strip()[:400]
+        desc = (t.get("description") or "").strip().lstrip(":").strip()[:500]
         if len(title) < 5:
             # Derive title from description when the LLM leaves title blank.
             first_sentence = re.split(r"[.!?:]", desc, maxsplit=1)[0].strip()
@@ -124,7 +144,7 @@ def _clean_tasks(raw: Any) -> list[dict]:
 
 async def _plan_ollama_once(
     model: str, user_message: str, ollama_base: str, num_ctx: int,
-    seed: int | None = None,
+    system_prompt: str, seed: int | None = None,
 ) -> list[dict]:
     options: dict[str, Any] = {"num_ctx": num_ctx, "temperature": 0.1}
     if seed is not None:
@@ -135,7 +155,7 @@ async def _plan_ollama_once(
             json={
                 "model": model,
                 "messages": [
-                    {"role": "system", "content": PLANNER_SYSTEM},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message},
                 ],
                 "stream": False,
@@ -153,6 +173,7 @@ async def _plan_ollama_once(
 
 async def _plan_ollama(
     model: str, user_message: str, ollama_base: str, num_ctx: int,
+    system_prompt: str,
 ) -> list[dict]:
     """Call the active model with grammar-constrained decoding.
 
@@ -162,13 +183,17 @@ async def _plan_ollama(
     The executor-level first-turn interception is the final fallback when
     neither pass produces a plan.
     """
-    tasks = await _plan_ollama_once(model, user_message, ollama_base, num_ctx)
+    tasks = await _plan_ollama_once(model, user_message, ollama_base, num_ctx, system_prompt)
     if tasks:
         return tasks
-    return await _plan_ollama_once(model, user_message, ollama_base, num_ctx, seed=7)
+    return await _plan_ollama_once(
+        model, user_message, ollama_base, num_ctx, system_prompt, seed=7,
+    )
 
 
-async def _plan_anthropic(model: str, user_message: str, api_key: str) -> list[dict]:
+async def _plan_anthropic(
+    model: str, user_message: str, api_key: str, system_prompt: str,
+) -> list[dict]:
     headers = {
         "x-api-key": api_key,
         "anthropic-version": "2023-06-01",
@@ -177,7 +202,7 @@ async def _plan_anthropic(model: str, user_message: str, api_key: str) -> list[d
     payload = {
         "model": model,
         "max_tokens": 2048,
-        "system": PLANNER_SYSTEM,
+        "system": system_prompt,
         "messages": [{"role": "user", "content": user_message}],
         "tools": [{
             "name": "emit_plan",
@@ -198,12 +223,14 @@ async def _plan_anthropic(model: str, user_message: str, api_key: str) -> list[d
     return []
 
 
-async def _plan_openai(model: str, user_message: str, api_key: str, base: str) -> list[dict]:
+async def _plan_openai(
+    model: str, user_message: str, api_key: str, base: str, system_prompt: str,
+) -> list[dict]:
     url = (base or "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": PLANNER_SYSTEM},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
         ],
         "response_format": {
@@ -220,13 +247,15 @@ async def _plan_openai(model: str, user_message: str, api_key: str, base: str) -
     return _clean_tasks((json.loads(content) or {}).get("tasks"))
 
 
-async def _plan_google(model: str, user_message: str, api_key: str) -> list[dict]:
+async def _plan_google(
+    model: str, user_message: str, api_key: str, system_prompt: str,
+) -> list[dict]:
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         f"?key={api_key}"
     )
     payload = {
-        "systemInstruction": {"parts": [{"text": PLANNER_SYSTEM}]},
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
         "contents": [{"role": "user", "parts": [{"text": user_message}]}],
         "generationConfig": {
             "responseMimeType": "application/json",
@@ -246,6 +275,7 @@ async def generate_plan(
     model: str,
     user_message: str,
     *,
+    tool_names: list[str] | None = None,
     ollama_base: str = "http://localhost:11434",
     num_ctx: int = 8192,
     anthropic_key: str = "",
@@ -254,16 +284,27 @@ async def generate_plan(
     google_key: str = "",
 ) -> list[dict]:
     """Dispatch to the active provider's planner. Returns [] on any failure so
-    the caller can fall back to the in-loop MANDATORY instruction."""
+    the caller can fall back to the in-loop MANDATORY instruction.
+
+    Pass `tool_names` so the planner's system prompt lists the exact tool
+    catalog — plan descriptions end up anchored to real tool names, which
+    the executor then reads out of the pinned plan block instead of
+    hallucinating (`gemma:list_files`, `path_to_tool/...`).
+    """
+    system_prompt = _build_planner_system(tool_names)
     try:
         if provider == "ollama":
-            return await _plan_ollama(model, user_message, ollama_base, num_ctx)
+            return await _plan_ollama(
+                model, user_message, ollama_base, num_ctx, system_prompt,
+            )
         if provider == "anthropic" and anthropic_key:
-            return await _plan_anthropic(model, user_message, anthropic_key)
+            return await _plan_anthropic(model, user_message, anthropic_key, system_prompt)
         if provider == "openai" and openai_key:
-            return await _plan_openai(model, user_message, openai_key, openai_base)
+            return await _plan_openai(
+                model, user_message, openai_key, openai_base, system_prompt,
+            )
         if provider == "google" and google_key:
-            return await _plan_google(model, user_message, google_key)
+            return await _plan_google(model, user_message, google_key, system_prompt)
     except Exception:
         return []
     return []

@@ -4447,8 +4447,13 @@ async def _stream_generator(
     if _needs_plan and not _existing_plan.get("tasks"):
         yield _sse({"type": "status", "message": "Planning multi-step work…"})
         _cfg = llm_providers._load_config()
+        _tool_names = [
+            (t.get("function") or {}).get("name", "") for t in TOOLS
+        ]
+        _tool_names = [n for n in _tool_names if n]
         _tasks = await _planner.generate_plan(
             provider, model, _user_msg,
+            tool_names=_tool_names,
             ollama_base=OLLAMA_BASE, num_ctx=NUM_CTX,
             anthropic_key=_cfg.get("anthropic_api_key", ""),
             openai_key=_cfg.get("openai_api_key", ""),
