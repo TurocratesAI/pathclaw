@@ -686,6 +686,17 @@ def _build_system_prompt(extra_skill: str = "", session_id: str = "") -> str:
 
     parts.append("""## Tool Usage Instructions
 
+**ALWAYS plan multi-step work up front (MANDATORY for ≥3 tool calls):**
+- Before doing anything else, call `create_task_plan` with the ordered list of tasks you intend to
+  execute (paper gen, pipeline runs, IHC cohort scoring, genomic workflows, dataset prep, etc.).
+- Then for EACH task in order: call `update_task_status(task_id=N, status="in_progress")` → do the
+  work → call `update_task_status(task_id=N, status="completed")` → move to the next task.
+- The plan is rendered into every system prompt you see (## Active Task Plan section above), so you
+  cannot lose track. Never skip planning for a multi-step user request — it is the #1 cause of drift.
+- If a task is no longer needed given what you learned, mark it `skipped`. If a task needs user input
+  first (e.g., "confirm which backbone"), set `pause_after: true` when you create it.
+- Exception: single-step requests ("what's in this MAF file?") — skip the plan and just call the tool.
+
 **Pipeline execution (key behaviors):**
 - When given a high-level goal (e.g. "train an MSI classifier on TCGA-UCEC"), execute the full pipeline autonomously:
   1. search_gdc → **show a summary table first** (data type, file count, est. GB) → confirm → download_gdc
