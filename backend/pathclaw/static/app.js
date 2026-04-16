@@ -2230,7 +2230,7 @@
         async function refreshTaskPlan() {
             if (!sessionId) { renderTaskPlan(null); return; }
             try {
-                const r = await fetch(`${API}/api/chat/tasks?session_id=${encodeURIComponent(sessionId)}`);
+                const r = await fetch(`${API}/api/task-plan/tasks?session_id=${encodeURIComponent(sessionId)}`);
                 if (!r.ok) return;
                 const plan = await r.json();
                 renderTaskPlan(plan);
@@ -2239,7 +2239,7 @@
         async function clearTaskPlan() {
             if (!sessionId) return;
             try {
-                await fetch(`${API}/api/chat/tasks?session_id=${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+                await fetch(`${API}/api/task-plan/tasks?session_id=${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
                 renderTaskPlan(null);
             } catch (e) { /* silent */ }
         }

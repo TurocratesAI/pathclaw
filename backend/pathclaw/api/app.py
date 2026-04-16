@@ -76,7 +76,7 @@ app.include_router(telegram.router, prefix="/api/telegram", tags=["telegram"])
 app.include_router(queue_route.router, prefix="/api/queue", tags=["queue"])
 app.include_router(workspace_fs.router, prefix="/api/workspace", tags=["workspace"])
 app.include_router(plugins_route.router, prefix="/api/plugins", tags=["plugins"])
-app.include_router(tasks_route.router, prefix="/api/chat", tags=["tasks"])
+app.include_router(tasks_route.router, prefix="/api/task-plan", tags=["tasks"])
 app.include_router(ihc_route.router, prefix="/api/ihc", tags=["ihc"])
 from pathclaw.api.routes import upload as upload_route  # noqa: E402
 app.include_router(upload_route.router, prefix="/api/upload", tags=["upload"])
