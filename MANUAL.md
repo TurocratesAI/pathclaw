@@ -311,13 +311,13 @@ are enforced at the decoding layer, not by prompt:
 | OpenAI | `response_format: json_schema` with `strict: true` |
 | Google Gemini | `generationConfig.responseSchema` |
 
-The planner always prefers `qwen3:8b` or `llama3.1:8b` for Ollama if they're
-pulled locally, because gemma4 has a documented [repetition-loop bug on
-free-text fields during grammar-constrained decoding](https://github.com/ollama/ollama/issues/15502).
-`maxLength` caps (title 80, description 240) bound the blast radius for any
-model that hits the bug. The heuristic `planner.should_plan()` decides
-whether planning fires (≥3 numbered/bulleted steps, or ≥3 "first/then/
-finally"-style connectors).
+The planner uses the **same active model** as the executor — no cross-model
+dependency. `maxLength` caps in the schema (title 80, description 240)
+bound the blast radius of gemma4's [repetition-loop bug under grammar-
+constrained decoding on free-text fields](https://github.com/ollama/ollama/issues/15502);
+on empty/invalid output the planner retries once with a different seed.
+The heuristic `planner.should_plan()` decides whether planning fires (≥3
+numbered/bulleted steps, or ≥3 "first/then/finally"-style connectors).
 
 ### Executor pass (standard tool loop)
 

@@ -347,11 +347,11 @@ for local models.
 2. A separate LLM call runs with **grammar-constrained decoding** — Ollama `format`
    (llama.cpp GBNF), Anthropic `tool_choice`, OpenAI `response_format.json_schema`,
    Gemini `responseSchema` — guaranteeing the output matches the task-plan schema.
-3. Preferred planner models (`qwen3:8b`, `llama3.1:8b`) are tried first when
-   available because gemma4 has a documented repetition-loop bug on free-text
-   fields inside grammar-constrained decoding ([ollama #15502](https://github.com/ollama/ollama/issues/15502)).
-   `maxLength` caps on every string field bound the blast radius if the fallback
-   kicks in.
+3. Planner uses the **same active model** as the executor — no cross-model
+   dependency. `maxLength` caps on every string field (title 80, description
+   240) bound the blast radius of gemma4's known repetition-loop bug under
+   grammar-constrained decoding ([ollama #15502](https://github.com/ollama/ollama/issues/15502));
+   on empty output the planner retries once with a different seed.
 4. The plan is persisted and pinned as `## Active Task Plan` at the top of every
    executor turn; the system prompt is rebuilt each round so status flips
    propagate live.

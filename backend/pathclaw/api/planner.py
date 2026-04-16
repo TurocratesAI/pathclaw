@@ -122,18 +122,13 @@ def _clean_tasks(raw: Any) -> list[dict]:
 # Per-provider planner calls
 # ---------------------------------------------------------------------------
 
-async def _ollama_list_models(ollama_base: str) -> list[str]:
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.get(f"{ollama_base}/api/tags")
-            return [m["name"] for m in r.json().get("models", [])]
-    except Exception:
-        return []
-
-
 async def _plan_ollama_once(
     model: str, user_message: str, ollama_base: str, num_ctx: int,
+    seed: int | None = None,
 ) -> list[dict]:
+    options: dict[str, Any] = {"num_ctx": num_ctx, "temperature": 0.1}
+    if seed is not None:
+        options["seed"] = seed
     async with httpx.AsyncClient(timeout=90.0) as client:
         resp = await client.post(
             f"{ollama_base}/api/chat",
@@ -145,7 +140,7 @@ async def _plan_ollama_once(
                 ],
                 "stream": False,
                 "format": PLAN_SCHEMA,
-                "options": {"num_ctx": num_ctx, "temperature": 0.1},
+                "options": options,
             },
         )
         resp.raise_for_status()
@@ -156,35 +151,21 @@ async def _plan_ollama_once(
         return []
 
 
-# Models known to behave well under grammar-constrained decoding, in order of
-# preference for planner fallback. qwen3 and llama3 are more stable than
-# gemma4 which has documented repetition-loop bugs on free-text fields.
-_PLANNER_FALLBACK_PREFERENCE = ("qwen3:8b", "qwen3:14b", "llama3.1:8b", "llama3.3:8b")
-
-
 async def _plan_ollama(
     model: str, user_message: str, ollama_base: str, num_ctx: int,
 ) -> list[dict]:
-    """Use the most reliable constrained-decoding model available locally.
+    """Call the active model with grammar-constrained decoding.
 
-    Gemma4 has a documented repetition-loop bug on free-text fields during
-    grammar-constrained decoding, so we prefer qwen3/llama3 when already
-    pulled. Falls back to the active model if nothing better is available.
+    If the first pass returns 0 usable tasks (known gemma4 repetition-loop
+    under constrained decoding — ollama #15502, capped by maxLength in
+    PLAN_SCHEMA so output still parses), retry once with a different seed.
+    The executor-level first-turn interception is the final fallback when
+    neither pass produces a plan.
     """
-    available = set(await _ollama_list_models(ollama_base))
-    # If the active model is a known-reliable planner, just use it.
-    if any(model.startswith(prefix) for prefix in ("qwen3", "qwen2.5", "llama3")):
-        tasks = await _plan_ollama_once(model, user_message, ollama_base, num_ctx)
-        if tasks:
-            return tasks
-    # Otherwise try each preferred planner model in order.
-    for preferred in _PLANNER_FALLBACK_PREFERENCE:
-        if preferred in available:
-            tasks = await _plan_ollama_once(preferred, user_message, ollama_base, num_ctx)
-            if tasks:
-                return tasks
-    # Last resort: the active model itself (e.g. gemma4 — quality degraded).
-    return await _plan_ollama_once(model, user_message, ollama_base, num_ctx)
+    tasks = await _plan_ollama_once(model, user_message, ollama_base, num_ctx)
+    if tasks:
+        return tasks
+    return await _plan_ollama_once(model, user_message, ollama_base, num_ctx, seed=7)
 
 
 async def _plan_anthropic(model: str, user_message: str, api_key: str) -> list[dict]:
