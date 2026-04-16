@@ -50,20 +50,21 @@ PLAN_SCHEMA: dict[str, Any] = {
 }
 
 
-__planner_system_BASE = """You convert a user's multi-step request into an ordered JSON task plan.
+__planner_system_BASE = """You convert a user's multi-step request into an ordered task plan by
+calling the `emit_plan` tool exactly once with the full `tasks` list.
 
 Rules:
 - 3-10 tasks. Each task is one logical chunk of work (typically 1-3 tool calls).
 - Titles: short imperative, <60 chars (e.g. "Download CHOL slides", "Train ABMIL 5-fold").
 - Descriptions: one sentence stating the concrete outcome AND the EXACT tool name(s)
-  that will be used. Pick tool names ONLY from the allowed list below — never invent
-  new names, never prefix with a namespace (no `gemma:`, no `path_to_tool/`).
+  the executor will run. Pick tool names ONLY from the allowed list below — never
+  invent new names, never prefix with a namespace (no `gemma:`, no `path_to_tool/`).
 - Preserve the user's order exactly. Do NOT add steps the user didn't ask for.
 - Set pause_after=true ONLY when the user explicitly wants to review results
   before proceeding (e.g. "show me the plan", "confirm X before continuing").
-- Default pause_after=false so the agent auto-advances through the plan.
+- Default pause_after=false so the executor auto-advances through the plan.
 
-Return ONLY the JSON object matching the schema — no prose, no code fences."""
+Call `emit_plan` once with the full ordered `tasks` array. Nothing else."""
 
 
 def _build_planner_system(tool_names: list[str] | None) -> str:
@@ -79,7 +80,7 @@ def _build_planner_system(tool_names: list[str] | None) -> str:
     catalog = ", ".join(sorted(set(tool_names)))
     return (
         __planner_system_BASE
-        + "\n\nALLOWED TOOL NAMES (use exactly, nothing else):\n"
+        + "\n\nEXECUTOR'S TOOL NAMES (reference these in descriptions; do NOT call them yourself):\n"
         + catalog
     )
 
@@ -170,10 +171,36 @@ async def _plan_ollama_once(
     model: str, user_message: str, ollama_base: str, num_ctx: int,
     system_prompt: str, seed: int | None = None,
 ) -> list[dict]:
-    options: dict[str, Any] = {"num_ctx": num_ctx, "temperature": 0.1}
+    """Call ollama with a native tool-call planner.
+
+    gemma4:26b is fine-tuned to emit ``call:name(args)`` when asked to produce
+    structured output, even under ``format: "json"`` — its args come out with
+    ``<|"|>`` special tokens that ollama's gemma4.go parser then rejects
+    ("invalid character ',' after top-level value"). Workaround: register an
+    ``emit_plan`` tool and let gemma4 call it natively. Ollama's tool-call
+    parser handles the native format cleanly and returns the args as proper
+    JSON on ``message.tool_calls[0].function.arguments``.
+
+    Grammar-constrained decoding (``format: PLAN_SCHEMA``) hits 500s at 1m30s
+    on gemma4:26b (ollama #15502) — avoid it. The native tool-call path
+    returns a valid plan in ~15-20s end-to-end (6s load + ~14s prefill+gen).
+    """
+    options: dict[str, Any] = {
+        "num_ctx": num_ctx,
+        "temperature": 0.1,
+        "num_predict": 1024,
+    }
     if seed is not None:
         options["seed"] = seed
-    async with httpx.AsyncClient(timeout=90.0) as client:
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "emit_plan",
+            "description": "Emit the ordered task plan for the user's request.",
+            "parameters": PLAN_SCHEMA,
+        },
+    }]
+    async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(
             f"{ollama_base}/api/chat",
             json={
@@ -183,16 +210,31 @@ async def _plan_ollama_once(
                     {"role": "user", "content": user_message},
                 ],
                 "stream": False,
-                "format": PLAN_SCHEMA,
+                "tools": tools,
+                # Force the emit_plan call — without tool_choice, gemma4:26b
+                # sometimes hallucinates alternative function names like
+                # ``create_task_plan`` that ollama's gemma4.go parser then
+                # chokes on (``<|"|>`` special-token wrapping of string args).
+                "tool_choice": {"type": "function", "function": {"name": "emit_plan"}},
                 "options": options,
             },
         )
         resp.raise_for_status()
-        content = resp.json().get("message", {}).get("content", "") or ""
-    try:
-        return _clean_tasks((json.loads(content) or {}).get("tasks"))
-    except json.JSONDecodeError:
-        return []
+        msg = resp.json().get("message", {}) or {}
+    # Accept any tool_call the model makes — tool_choice forces emit_plan, but
+    # be permissive on the name so we don't regress if ollama's contract shifts.
+    for tc in msg.get("tool_calls", []) or []:
+        fn = tc.get("function", {}) or {}
+        args = fn.get("arguments") or {}
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                continue
+        tasks = args.get("tasks") if isinstance(args, dict) else None
+        if tasks:
+            return _clean_tasks(tasks)
+    return []
 
 
 async def _plan_ollama(

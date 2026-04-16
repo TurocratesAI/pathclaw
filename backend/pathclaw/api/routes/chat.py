@@ -591,6 +591,85 @@ def _match_skills(message: str) -> list[str]:
     return [s for s, _ in sorted(scores.items(), key=lambda x: -x[1])[:2]]
 
 
+# ---------------------------------------------------------------------------
+# Skill-gated tool filtering (local-model speedup)
+# ---------------------------------------------------------------------------
+# The full tool catalog serialized to JSON is ~55 KB (~14K prompt tokens), which
+# means gemma4:26b spends most of its prefill time re-reading tool schema on
+# every turn. For small local models we narrow the catalog to:
+#
+#     CORE (always-on)  +  tools(skill)  for each active skill
+#
+# Piggybacks on the keyword skill router — no extra LLM call. Frontier models
+# (anthropic/openai/google) still get the full catalog because their prefill is
+# cheap and they handle a wide tool surface better.
+
+_CORE_TOOL_NAMES: set[str] = {
+    # agent control / plan
+    "create_task_plan", "update_task_status", "get_task_plan",
+    # artifacts / workspace
+    "list_artifacts", "list_workspace_files", "read_workspace_file",
+    "write_workspace_file", "delete_workspace_file",
+    # memory + notes
+    "remember_fact", "recall_facts", "read_notes", "write_note",
+    # session identity + status
+    "rename_session", "system_status", "ask_user",
+    # jobs
+    "wait_for_job", "get_job_status", "list_queue",
+    # manuscript (paper-writing is a common finisher — keep always-on)
+    "write_manuscript", "read_manuscript", "compile_manuscript",
+    # scripting / misc
+    "run_python", "fetch_url",
+}
+
+_SKILL_TOOL_NAMES: dict[str, set[str]] = {
+    "dataset-intake": {"register_dataset", "list_datasets", "list_dataset_slides", "list_folders"},
+    "gdc-tcga": {"search_gdc", "download_gdc", "gdc_job_status"},
+    "data-profiling": {"get_dataset_profile", "list_datasets"},
+    "data-cleaning": {"get_dataset_profile"},
+    "data-lifecycle": {"list_datasets"},
+    "wsi-preprocess": {
+        "start_preprocessing", "start_feature_extraction",
+        "list_backbones", "register_hf_backbone",
+    },
+    "segmentation": {"run_cellpose_segmentation"},
+    "lora-finetune": {"start_lora_finetuning", "list_backbones"},
+    "train-config": {"get_config", "get_training_logs", "compare_experiments", "list_backbones"},
+    "train-exec": {"start_training", "get_training_logs", "get_config"},
+    "evaluation": {
+        "start_evaluation", "get_eval_metrics", "get_eval_plots",
+        "generate_heatmap", "make_plot", "get_training_logs", "get_config",
+    },
+    "results": {"compare_experiments", "make_plot", "get_eval_metrics", "get_eval_plots"},
+    "genomic-analysis": {
+        "parse_genomic_file", "query_mutations", "compute_tmb",
+        "generate_oncoplot", "query_cbioportal", "parse_gene_expression",
+    },
+    "label-engineering": {"extract_labels_from_genomic", "build_multi_omic_labels"},
+    "survival-biomarker": {"run_survival_analysis", "biomarker_discovery", "query_cbioportal"},
+}
+
+
+def _select_tools_for_provider(
+    all_tools: list[dict], provider: str, active_skills: list[str]
+) -> list[dict]:
+    """For ollama, narrow tools to CORE ∪ skill buckets. Other providers get
+    the full catalog. Falls back to full catalog if the filter would starve
+    the agent (<10 tools) — safer than tool-starving a generic request."""
+    if provider != "ollama":
+        return all_tools
+    allowed = set(_CORE_TOOL_NAMES)
+    for sk in active_skills or []:
+        allowed |= _SKILL_TOOL_NAMES.get(sk, set())
+    filtered = [
+        t for t in all_tools
+        if (t.get("function") or {}).get("name", "") in allowed
+    ]
+    if len(filtered) < 10:
+        return all_tools
+    return filtered
+
+
 def _load_skill(skill_name: str) -> str:
     skill_path = WORKSPACE_DIR / "skills" / skill_name / "SKILL.md"
     if skill_path.exists():
@@ -4423,11 +4502,12 @@ async def chat(req: ChatRequest) -> ChatResponse:
 
     tool_calls_made: list[str] = []
     provider, model = llm_providers.get_active_provider()
+    _tools_for_round = _select_tools_for_provider(TOOLS, provider, matched_skills)
 
     for _ in range(25):  # max tool rounds
         try:
             msg = await llm_providers.chat_round(
-                provider, model, messages, TOOLS, OLLAMA_BASE, NUM_CTX
+                provider, model, messages, _tools_for_round, OLLAMA_BASE, NUM_CTX
             )
         except Exception as e:
             raise HTTPException(503, f"LLM error ({provider}): {e}")
@@ -4507,6 +4587,10 @@ async def _stream_generator(
 
     provider, model = llm_providers.get_active_provider()
 
+    # Narrow the tool catalog for small local models based on active skills.
+    # Cuts ollama prefill from ~14K → ~3-5K tokens of tool schema.
+    _tools_for_round = _select_tools_for_provider(TOOLS, provider, active_skills)
+
     # ---- Plan-and-Execute: auto-seed a task plan for multi-step prompts ----
     # Dedicated planner call with constrained decoding (Ollama `format`,
     # Anthropic tool_choice, OpenAI json_schema, Gemini responseSchema). If it
@@ -4527,10 +4611,17 @@ async def _stream_generator(
     if _needs_plan and not _existing_plan.get("tasks"):
         yield _sse({"type": "status", "message": "Planning multi-step work…"})
         _cfg = llm_providers._load_config()
+        # Planner sees the SAME narrowed catalog the executor will use, so plan
+        # descriptions don't reference tools that got filtered out. BUT we strip
+        # the planner-meta tools (create_task_plan, update_task_status, etc.) —
+        # gemma4:26b sees those names and emits its native ``call:name(args)``
+        # syntax instead of schema-matching JSON (ollama gemma4.go parser then
+        # warns + returns empty). The planner doesn't need to reference itself.
+        _PLANNER_EXCLUDE = {"create_task_plan", "update_task_status", "get_task_plan", "ask_user"}
         _tool_names = [
-            (t.get("function") or {}).get("name", "") for t in TOOLS
+            (t.get("function") or {}).get("name", "") for t in _tools_for_round
         ]
-        _tool_names = [n for n in _tool_names if n]
+        _tool_names = [n for n in _tool_names if n and n not in _PLANNER_EXCLUDE]
         _tasks = await _planner.generate_plan(
             provider, model, _user_msg,
             tool_names=_tool_names,
@@ -4592,7 +4683,7 @@ async def _stream_generator(
 
         try:
             async for chunk in await llm_providers.stream_round(
-                provider, model, messages, TOOLS, OLLAMA_BASE, NUM_CTX
+                provider, model, messages, _tools_for_round, OLLAMA_BASE, NUM_CTX
             ):
                 if chunk.get("error"):
                     yield _sse({"type": "error", "message": chunk["error"]})
