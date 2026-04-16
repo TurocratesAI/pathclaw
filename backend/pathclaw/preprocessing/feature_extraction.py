@@ -440,29 +440,50 @@ def extract_features(
             errors.append(f"{slide_stem}: slide file not found")
             continue
 
-        try:
-            features_for_slide = _extract_slide_features(
-                slide_path=slide_path,
-                coords=coords,
-                model=model,
-                transform=transform,
-                patch_px=info["patch_px"],
-                batch_size=batch_size,
-                device=device,
-                fp16=(device.type == "cuda"),
-                backbone_name=backbone,
-            )
-
-            torch.save(features_for_slide, out_path)  # already on CPU
-            logger.info(
-                f"Extracted {features_for_slide.shape[0]} patches × "
-                f"{features_for_slide.shape[1]} dims → {out_path.name}"
-            )
-        except Exception as e:
-            logger.error(f"Failed to extract {slide_stem}: {e}")
-            errors.append(f"{slide_stem}: {e}")
-            # Free fragmented GPU memory after OOM
-            torch.cuda.empty_cache()
+        # One-shot batch-halve retry on CUDA OOM. MIL feature extraction has
+        # the right shape for this — the slide's patches are batched and a
+        # 1/2 batch cuts peak VRAM roughly in half without changing output.
+        _extract_bs = batch_size
+        for _attempt in (1, 2):
+            try:
+                features_for_slide = _extract_slide_features(
+                    slide_path=slide_path,
+                    coords=coords,
+                    model=model,
+                    transform=transform,
+                    patch_px=info["patch_px"],
+                    batch_size=_extract_bs,
+                    device=device,
+                    fp16=(device.type == "cuda"),
+                    backbone_name=backbone,
+                )
+                torch.save(features_for_slide, out_path)  # already on CPU
+                logger.info(
+                    f"Extracted {features_for_slide.shape[0]} patches × "
+                    f"{features_for_slide.shape[1]} dims → {out_path.name}"
+                )
+                break
+            except torch.cuda.OutOfMemoryError as e:
+                torch.cuda.empty_cache()
+                if _attempt == 1 and _extract_bs > 1:
+                    _extract_bs = max(1, _extract_bs // 2)
+                    logger.warning(
+                        f"{slide_stem}: CUDA OOM at batch {batch_size} — "
+                        f"retrying with batch {_extract_bs}"
+                    )
+                    if job_status is not None:
+                        job_status.setdefault("oom_retries", []).append(
+                            {"slide": slide_stem, "batch_before": batch_size, "batch_after": _extract_bs}
+                        )
+                    continue
+                logger.error(f"Failed to extract {slide_stem}: OOM even at batch {_extract_bs}: {e}")
+                errors.append(f"{slide_stem}: OOM at batch {_extract_bs}")
+                break
+            except Exception as e:
+                logger.error(f"Failed to extract {slide_stem}: {e}")
+                errors.append(f"{slide_stem}: {e}")
+                torch.cuda.empty_cache()
+                break
 
         completed += 1
         if job_status:

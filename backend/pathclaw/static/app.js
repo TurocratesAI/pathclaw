@@ -1111,7 +1111,7 @@
                 return;
             }
             if (!_monacoEditor) _mountMonaco();
-            if (_monacoDirty && !confirm('Unsaved changes. Discard?')) return;
+            if (_monacoDirty && !(await confirmModal('Unsaved changes. Discard?'))) return;
             try {
                 const sidQ = sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : '';
                 const r = await fetch(`${API}/api/workspace/file?path=${encodeURIComponent(path)}${sidQ}`);
@@ -1477,7 +1477,7 @@
             // Find session title for confirmation dialog
             const titleEl = document.querySelector(`.session-item[data-sid="${sid}"] .session-item-title`);
             const label = titleEl ? titleEl.textContent.trim() : 'this session';
-            if (!confirm(`Delete "${label}"?\n\nThis will permanently remove the chat history from the server.`)) return;
+            if (!(await confirmModal(`Delete "${label}"?\n\nThis will permanently remove the chat history from the server.`))) return;
             await fetch(`${API}/api/chat/history/${sid}`, { method: 'DELETE' });
             if (sid === sessionId) {
                 const remaining = await fetch(`${API}/api/chat/history`).then(r => r.json()).then(d => d.chats || []);
@@ -2350,7 +2350,7 @@
             `;
         }
         async function clearNotebook() {
-            if (!sessionId || !confirm('Clear notebook for this session?')) return;
+            if (!sessionId || !(await confirmModal('Clear notebook for this session?'))) return;
             await fetch(`${API}/api/chat/notes/${sessionId}`, { method: 'DELETE' });
             renderNotebook();
         }
@@ -2411,7 +2411,7 @@
             renderFolders();
         }
         async function deleteFolder(id) {
-            if (!confirm('Delete this folder and its PDFs?')) return;
+            if (!(await confirmModal('Delete this folder and its PDFs?'))) return;
             await fetch(`${API}/api/folders/${id}`, { method: 'DELETE' });
             renderFolders();
         }
@@ -2507,7 +2507,7 @@
             _msShowLog(`Saved ${_msActiveFile}`);
         }
         async function msDeleteFile() {
-            if (!_msActiveFile || !confirm(`Delete ${_msActiveFile}?`)) return;
+            if (!_msActiveFile || !(await confirmModal(`Delete ${_msActiveFile}?`))) return;
             await fetch(`${API}/api/chat/manuscript/${sessionId}/file/${encodeURIComponent(_msActiveFile)}`, { method: 'DELETE' });
             _msActiveFile = '';
             renderManuscript();
