@@ -655,9 +655,26 @@ def _tools_catalog() -> str:
     return "\n".join(lines)
 
 
+_PLAN_BANNER = """# AGENT EXECUTION RULE (read FIRST, always true)
+
+If the user's request involves ≥3 discrete steps, your VERY FIRST tool call MUST be
+`create_task_plan` with the ordered list of tasks. Any other first call is wrong.
+
+After the plan exists, for each task in order:
+  1. `update_task_status(task_id=N, status="in_progress")` BEFORE any other tool.
+  2. Do the work for that task.
+  3. `update_task_status(task_id=N, status="completed")` when done.
+
+The current plan is always pinned below as `## Active Task Plan`. If that section
+says "no active plan" and the request has ≥3 steps, plan first — do not improvise.
+
+Tool names are exact: use `create_task_plan`, NOT `plan`, `gemma:plan`, or any
+namespaced variant. If a tool you want isn't in the catalog, IT DOES NOT EXIST."""
+
+
 def _build_system_prompt(extra_skill: str = "", session_id: str = "") -> str:
     """Load core workspace files + optional active skill into the system prompt."""
-    parts = []
+    parts = [_PLAN_BANNER]
     for fname in ["AGENTS.md", "SOUL.md"]:
         fpath = WORKSPACE_DIR / fname
         if fpath.exists():
@@ -4410,8 +4427,75 @@ async def _stream_generator(
 
     provider, model = llm_providers.get_active_provider()
 
+    # ---- Plan-and-Execute: auto-seed a task plan for multi-step prompts ----
+    # Dedicated planner call with constrained decoding (Ollama `format`,
+    # Anthropic tool_choice, OpenAI json_schema, Gemini responseSchema). If it
+    # succeeds, the plan is persisted and pinned in the system prompt BEFORE
+    # the executor loop starts — the LLM never has to decide whether to plan.
+    from pathclaw.api import planner as _planner
+    from pathclaw.api.routes.tasks import load_plan as _load_plan, save_plan as _save_plan
+    from datetime import datetime as _dt, timezone as _tz
+
+    _user_msg = ""
+    for _m in reversed(messages):
+        if _m.get("role") == "user":
+            _user_msg = _m.get("content", "") or ""
+            break
+    _needs_plan = _planner.should_plan(_user_msg)
+    _existing_plan = _load_plan(session_id) if session_id else {"tasks": []}
+
+    if _needs_plan and not _existing_plan.get("tasks"):
+        yield _sse({"type": "status", "message": "Planning multi-step work…"})
+        _cfg = llm_providers._load_config()
+        _tasks = await _planner.generate_plan(
+            provider, model, _user_msg,
+            ollama_base=OLLAMA_BASE, num_ctx=NUM_CTX,
+            anthropic_key=_cfg.get("anthropic_api_key", ""),
+            openai_key=_cfg.get("openai_api_key", ""),
+            openai_base=_cfg.get("openai_base", ""),
+            google_key=_cfg.get("google_api_key", ""),
+        )
+        if _tasks:
+            _now = _dt.now(_tz.utc).isoformat()
+            _plan = {
+                "session_id": session_id,
+                "created_at": _now,
+                "updated_at": _now,
+                "tasks": [
+                    {
+                        "id": i + 1,
+                        "title": t["title"],
+                        "description": t["description"],
+                        "status": "pending",
+                        "pause_after": t["pause_after"],
+                        "created_at": _now,
+                        "updated_at": _now,
+                    }
+                    for i, t in enumerate(_tasks)
+                ],
+            }
+            _save_plan(_plan)
+            yield _sse({"type": "task_plan", "plan": _plan})
+            # Rebuild system prompt so the freshly-saved plan is pinned in the
+            # very first executor turn.
+            if messages and messages[0].get("role") == "system":
+                messages[0]["content"] = _build_system_prompt(
+                    "".join(_load_skill(s) for s in active_skills),
+                    session_id=session_id,
+                )
+
     import time as _time
     for round_num in range(25):
+        # Rebuild the system prompt every round so task-status flips from the
+        # previous round's update_task_status tool calls propagate into the
+        # LLM's view of `## Active Task Plan`. Cheap (template read + string
+        # concat) and prevents the agent from losing track mid-loop.
+        if session_id and messages and messages[0].get("role") == "system":
+            messages[0]["content"] = _build_system_prompt(
+                "".join(_load_skill(s) for s in active_skills),
+                session_id=session_id,
+            )
+
         accumulated_content = ""
         accumulated_tool_calls: list[dict] = []
         first_token = True
@@ -4472,6 +4556,33 @@ async def _stream_generator(
             fn_name = fn.get("name", "unknown")
             fn_args = fn.get("arguments", {})
             tool_calls_made.append(fn_name)
+
+            # Plan-first guardrail: if the auto-planner couldn't seed a plan
+            # (e.g. provider keys missing, constrained decoding bug, model
+            # refusal) but the request is clearly multi-step, intercept the
+            # first non-planning tool call and force the LLM to plan now.
+            if (
+                round_num == 0
+                and _needs_plan
+                and not _load_plan(session_id).get("tasks")
+                and fn_name not in ("create_task_plan", "get_task_plan")
+            ):
+                tool_call_id = tc.get("id") or ""
+                _reject = (
+                    "ERROR: This is a multi-step request. Before calling any "
+                    "other tool, you MUST first call `create_task_plan` with "
+                    "the ordered list of tasks you intend to execute. Use the "
+                    "exact tool name `create_task_plan` (not `plan`, not "
+                    "`gemma:plan`). Retry now."
+                )
+                messages.append({
+                    "role": "tool",
+                    "content": _reject,
+                    "tool_call_id": tool_call_id,
+                    "name": fn_name,
+                })
+                yield _sse({"type": "tool_result", "name": fn_name, "result": _reject})
+                continue
 
             # Special SSE event for code execution so frontend renders a code block
             if fn_name == "run_python":

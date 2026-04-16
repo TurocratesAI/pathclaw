@@ -335,11 +335,31 @@ Dynamic rules: pass `rule_override={"dab_threshold": 0.12, "patches_per_slide": 
 `score_ihc` for ad-hoc adjustments without editing code. Custom markers (CK7, p53,
 E-cadherin, …) register at runtime — see `docs/PLUGIN_DEV.md`.
 
-### Task plan — prevent multi-step drift
-Small local LLMs (`gemma4:26b`, `qwen3:8b`) lose long plans mid-conversation. For any
-request that needs 3+ tool calls (paper generation, full pipelines, IHC cohort
-scoring, genomic workflows), the agent now **commits to a plan up front**, one task
-per step, via three tools:
+### Task plan — plan-and-execute with constrained decoding
+Small local LLMs (`gemma4:26b`, `qwen3:8b`) lose long plans mid-conversation. For
+any request that needs 3+ tool calls (paper generation, full pipelines, IHC cohort
+scoring, genomic workflows), PathClaw runs a **dedicated planner pass** before the
+executor ever sees a tool catalog — the LangGraph plan-and-execute pattern adapted
+for local models.
+
+**How it works:**
+1. `should_plan()` heuristic detects enumerated/multi-step prompts.
+2. A separate LLM call runs with **grammar-constrained decoding** — Ollama `format`
+   (llama.cpp GBNF), Anthropic `tool_choice`, OpenAI `response_format.json_schema`,
+   Gemini `responseSchema` — guaranteeing the output matches the task-plan schema.
+3. Preferred planner models (`qwen3:8b`, `llama3.1:8b`) are tried first when
+   available because gemma4 has a documented repetition-loop bug on free-text
+   fields inside grammar-constrained decoding ([ollama #15502](https://github.com/ollama/ollama/issues/15502)).
+   `maxLength` caps on every string field bound the blast radius if the fallback
+   kicks in.
+4. The plan is persisted and pinned as `## Active Task Plan` at the top of every
+   executor turn; the system prompt is rebuilt each round so status flips
+   propagate live.
+5. Server-side first-turn interception is the safety net: if the planner fails
+   and the agent tries a non-planning tool first on a multi-step request, the
+   call is rejected with a redirect to `create_task_plan`.
+
+**Agent-facing tools:**
 
 | Tool | Description |
 |------|-------------|

@@ -79,7 +79,11 @@ def render_plan_for_prompt(session_id: str) -> str:
     plan = load_plan(session_id)
     tasks = plan.get("tasks") or []
     if not tasks:
-        return ""
+        return (
+            "## Active Task Plan\n"
+            "(no active plan — if this request has ≥3 steps, call "
+            "`create_task_plan` FIRST before any other tool)"
+        )
     lines = ["## Active Task Plan (auto-advance)"]
     for t in tasks:
         mark = {"completed": "[x]", "in_progress": "[~]", "pending": "[ ]", "skipped": "[-]"}.get(

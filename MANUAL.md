@@ -293,23 +293,61 @@ GPU-efficient at inference.
 
 ---
 
-## 7c. Task plan (multi-step drift guard)
+## 7c. Task plan (plan-and-execute with constrained decoding)
 
-Small local LLMs drift on ≥3-step requests. To counter this, the agent is
-instructed to commit to an explicit plan up front using three tools:
-`create_task_plan`, `update_task_status`, `get_task_plan`. The plan is
-stored at `~/.pathclaw/sessions/<sid>/tasks.json` and surfaced two ways:
+Small local LLMs drift on ≥3-step requests. PathClaw splits the problem into
+two independent LLM calls — the [LangGraph plan-and-execute pattern](https://blog.langchain.com/planning-agents/)
+adapted for local models:
 
-1. **System prompt injection** — every turn sees the live plan at the top
-   of the system prompt with a `[x] [~] [ ] [-]` mark per task and an
-   explicit rule ("work the first `[ ]` task next").
-2. **Sidebar checklist** — below Active Jobs. Each tick flips in real time
-   as `update_task_status` SSE events arrive (no refresh).
+### Planner pass (before the executor)
+
+A dedicated LLM call whose only job is to emit a JSON task plan. Constraints
+are enforced at the decoding layer, not by prompt:
+
+| Provider | Mechanism |
+|----------|-----------|
+| Ollama | `format` parameter → llama.cpp GBNF grammar |
+| Anthropic | Forced `tool_choice` on an `emit_plan` tool |
+| OpenAI | `response_format: json_schema` with `strict: true` |
+| Google Gemini | `generationConfig.responseSchema` |
+
+The planner always prefers `qwen3:8b` or `llama3.1:8b` for Ollama if they're
+pulled locally, because gemma4 has a documented [repetition-loop bug on
+free-text fields during grammar-constrained decoding](https://github.com/ollama/ollama/issues/15502).
+`maxLength` caps (title 80, description 240) bound the blast radius for any
+model that hits the bug. The heuristic `planner.should_plan()` decides
+whether planning fires (≥3 numbered/bulleted steps, or ≥3 "first/then/
+finally"-style connectors).
+
+### Executor pass (standard tool loop)
+
+The plan is stored at `~/.pathclaw/sessions/<sid>/tasks.json` and surfaced
+three ways during execution:
+
+1. **Plan banner at the top of the system prompt** — an always-on "AGENT
+   EXECUTION RULE" block above even `AGENTS.md`, stating that the first tool
+   call on a multi-step request must be `create_task_plan`.
+2. **Live plan block** — rendered as `## Active Task Plan` with
+   `[x] [~] [ ] [-]` marks per task. The system prompt is rebuilt every
+   executor round so status flips from the previous `update_task_status`
+   call propagate into the next LLM turn.
+3. **Sidebar checklist** — below Active Jobs. Ticks flip in real time as
+   SSE `task_plan` / `update_task_status` events arrive.
+
+### First-turn interception (safety net)
+
+If the planner pass returns zero tasks (e.g. model refusal, network blip)
+but `should_plan()` said planning was required, the first tool call in the
+executor loop is checked: if it's not `create_task_plan` or `get_task_plan`,
+the call is rejected with a redirect to `create_task_plan` and the agent
+gets another turn. Belt-and-suspenders for the rare case where constrained
+decoding silently fails.
+
+### Agent-facing tools
 
 Default behavior is **auto-advance**: finish a task, mark it completed,
 start the next one in the same turn. Set `pause_after: true` on any task
-to make the agent pause and wait for user input before moving on (useful
-after "show the search results" or "check the download succeeded").
+to make the agent pause and wait for user input before moving on.
 
 Typical auto-generated plan for a paper run:
 
