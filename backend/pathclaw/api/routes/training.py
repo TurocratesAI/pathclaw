@@ -341,7 +341,8 @@ async def get_training_status(job_id: str):
         if history_path.exists():
             data["history"] = json.loads(history_path.read_text())
 
-    return data
+    from ._eta import annotate_eta
+    return annotate_eta(data)
 
 
 @router.get("/{job_id}/plots")

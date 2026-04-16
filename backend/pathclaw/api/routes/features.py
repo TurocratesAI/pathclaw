@@ -136,7 +136,8 @@ async def get_feature_job_status(job_id: str):
             status["errors"] = errs
             _write_status(job_id, status)
 
-    return status
+    from ._eta import annotate_eta
+    return annotate_eta(status)
 
 
 @router.post("/{job_id}/cancel")

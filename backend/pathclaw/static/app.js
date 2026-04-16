@@ -697,6 +697,9 @@
                                     if (!sl) { sl = document.createElement('div'); sl.className = 'agent-status'; agentBubble.querySelector('.tools').appendChild(sl); }
                                     sl.textContent = ev.message || '';
                                 }
+                                else if (ev.type === 'task_plan') {
+                                    try { renderTaskPlan(ev.plan); } catch {}
+                                }
                                 else if (ev.type === 'code_exec') {
                                     ensureBubble();
                                     const desc = ev.description ? `<div class="code-exec-desc">${ev.description}</div>` : '';
@@ -714,6 +717,7 @@
                                     }
                                     renderFileTree();
                                     loadSessionList();
+                                    try { refreshTaskPlan(); } catch {}
                                 } else if (ev.type === 'error') {
                                     if (!typingRemoved) { hideTyping(); typingRemoved = true; }
                                     addMsg(`Error: ${ev.message}`, 'agent');
@@ -1460,6 +1464,8 @@
                 _resetWorkspacePanel();
                 renderSessionList();
                 renderFileTree();
+                refreshTaskPlan();
+                refreshJobsPanel();
                 toggleSessionDrawer();
             } catch(e) {
                 showError('Failed to load session.');
@@ -1586,6 +1592,8 @@
                     <div class="job-metrics">
                         <div class="jm"><div class="jm-lbl">Epoch</div><div class="jm-val jep">${j.epoch || 0} / ${j.total_epochs || '?'}</div></div>
                         <div class="jm"><div class="jm-lbl">Progress</div><div class="jm-val jpct">${pct}%</div></div>
+                        <div class="jm"><div class="jm-lbl">Elapsed</div><div class="jm-val">${j.elapsed_human || '—'}</div></div>
+                        <div class="jm"><div class="jm-lbl">ETA</div><div class="jm-val">${j.eta_human || (j.status === 'running' ? '…' : '—')}</div></div>
                         <div class="jm"><div class="jm-lbl">Train loss</div><div class="jm-val jtl">${m.train_loss ? m.train_loss.toFixed(4) : '—'}</div></div>
                         <div class="jm"><div class="jm-lbl">Val loss</div><div class="jm-val jvl">${m.val_loss ? m.val_loss.toFixed(4) : '—'}</div></div>
                     </div>
@@ -2202,12 +2210,48 @@
             } catch (e) { /* silent */ }
         }
 
+        // === Task-plan panel (live agent checklist) ===
+        function renderTaskPlan(plan) {
+            const panel = el('tasksPanel');
+            if (!panel) return;
+            const tasks = (plan && plan.tasks) || [];
+            if (!tasks.length) { panel.style.display = 'none'; panel.innerHTML = ''; return; }
+            panel.style.display = '';
+            const marks = { completed: '[x]', in_progress: '[~]', pending: '[ ]', skipped: '[-]' };
+            panel.innerHTML = `<div class="tasks-panel-title"><span>Task Plan</span><span class="tp-clear" onclick="clearTaskPlan()" title="Clear plan">Clear</span></div>` +
+                tasks.map(t => {
+                    const st = t.status || 'pending';
+                    const mark = marks[st] || '[ ]';
+                    const title = (t.title || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    const pause = t.pause_after ? '<span class="task-pause">pause</span>' : '';
+                    return `<div class="task-row ${st}"><span class="task-mark ${st}">${mark}</span><span class="task-title">${t.id}. ${title}</span>${pause}</div>`;
+                }).join('');
+        }
+        async function refreshTaskPlan() {
+            if (!sessionId) { renderTaskPlan(null); return; }
+            try {
+                const r = await fetch(`${API}/api/chat/tasks?session_id=${encodeURIComponent(sessionId)}`);
+                if (!r.ok) return;
+                const plan = await r.json();
+                renderTaskPlan(plan);
+            } catch (e) { /* silent */ }
+        }
+        async function clearTaskPlan() {
+            if (!sessionId) return;
+            try {
+                await fetch(`${API}/api/chat/tasks?session_id=${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+                renderTaskPlan(null);
+            } catch (e) { /* silent */ }
+        }
+        window.clearTaskPlan = clearTaskPlan;
+
         // === Init ===
-        checkStatus(); checkOnboard(); checkOllama(); renderFileTree(); refreshJobsPanel();
+        checkStatus(); checkOnboard(); checkOllama(); renderFileTree(); refreshJobsPanel(); refreshTaskPlan();
         setInterval(checkStatus, 10000);
         setInterval(checkOllama, 15000);
         setInterval(renderFileTree, 30000);
         setInterval(refreshJobsPanel, 5000);
+        setInterval(refreshTaskPlan, 10000);
 
         // Resume polling if there was an active job from a previous page load
         if (activeJobId) {

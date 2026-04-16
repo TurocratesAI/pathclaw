@@ -676,6 +676,13 @@ def _build_system_prompt(extra_skill: str = "", session_id: str = "") -> str:
         notes = _session_notes_block(session_id)
         if notes:
             parts.append(notes)
+        try:
+            from pathclaw.api.routes.tasks import render_plan_for_prompt
+            plan_block = render_plan_for_prompt(session_id)
+            if plan_block:
+                parts.append(plan_block)
+        except Exception:
+            pass
 
     parts.append("""## Tool Usage Instructions
 
@@ -689,7 +696,12 @@ def _build_system_prompt(extra_skill: str = "", session_id: str = "") -> str:
      → Only call wait_for_job(gdc) right before you need the files (e.g., before register_dataset).
   2. run_python to extract labels from MAF/CSV files
   3. start_preprocessing → wait_for_job(preprocess) → start_feature_extraction → wait_for_job(features)
-  4. **Pause here — confirm** backbone, MIL method, hyperparams with the user
+  4. **Pause here — confirm** backbone, MIL method, hyperparams, **and the primary evaluation metric** with the user.
+     Ask which metric matters for their task before training: `auroc` (default for binary tumor/normal, mutation calling),
+     `accuracy` / `balanced_accuracy` (balanced cohorts), `macro_f1` / `weighted_f1` (class imbalance), `qwk`
+     (ordinal targets — e.g., grade I–IV, Gleason), `sensitivity` / `specificity` (clinical screening, fixed threshold).
+     Pass the user's choice in `evaluation.metrics` on start_training — the trainer will report all of them and
+     early-stop on the first one listed.
   5. start_training → wait_for_job(training) → start_evaluation → wait_for_job(eval) → get_eval_metrics
 - Use **wait_for_job** instead of manually polling get_job_status. It blocks until the job completes and emits live status updates.
 - Use **parse_genomic_file** to parse MAF, VCF, or clinical XML files — it returns structured summaries, gene-specific variants, TMB stats, and clinical fields. Much more reliable than writing ad-hoc pandas code.
@@ -816,6 +828,146 @@ TOOLS = [
             "name": "read_notes",
             "description": "Read the full session notebook. Rarely needed since notes are auto-injected into your system prompt, but useful if you want to review before planning a complex multi-step operation.",
             "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    # --- Task plan (mandatory for ≥3-step requests; prevents drift on small LLMs) ---
+    {
+        "type": "function",
+        "function": {
+            "name": "create_task_plan",
+            "description": (
+                "Commit to a step-by-step plan BEFORE doing multi-step work. "
+                "Call this ONCE at the start of any request that needs 3+ tool calls "
+                "(paper generation, pipeline runs, dataset prep, IHC scoring, etc.). "
+                "Each task is one discrete chunk of work (\"download slides\", \"extract features\", "
+                "\"write manuscript methods section\"). Use `pause_after=true` on a task only when "
+                "you need the user's input before continuing (e.g., after showing intermediate "
+                "results). Default is auto-advance: finish a task, mark completed, immediately "
+                "start the next one in the same turn. The current plan is always visible at the "
+                "top of your system prompt so you cannot lose track."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "description": "Ordered list of tasks. Each is {title, description, pause_after?}.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string", "description": "Short imperative title (<60 chars)"},
+                                "description": {"type": "string", "description": "What tool calls / outcome this task covers"},
+                                "pause_after": {"type": "boolean", "description": "Set true to stop and wait for user input after this task"},
+                            },
+                            "required": ["title"],
+                        },
+                    },
+                },
+                "required": ["tasks"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_task_status",
+            "description": (
+                "Flip a task's status. Call this TWICE per task: "
+                "first with status=\"in_progress\" BEFORE you start the task's tool calls, "
+                "then with status=\"completed\" once done. Use \"skipped\" if a task is no longer "
+                "needed given what you've learned. The frontend checklist updates live."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "integer", "description": "ID from create_task_plan response / plan view"},
+                    "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "skipped"]},
+                },
+                "required": ["task_id", "status"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_task_plan",
+            "description": "Read the current plan. Usually not needed — the plan is always injected into your system prompt — but available if you want to re-read.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    # --- IHC scoring (rule-based + learned) ---
+    {
+        "type": "function",
+        "function": {
+            "name": "list_ihc_rules",
+            "description": (
+                "List built-in IHC scoring presets (Ki-67 PI, ER/PR Allred, HER2 0/1+/2+/3+, "
+                "PD-L1 TPS) with their compartments, DAB thresholds, and aggregation rules. "
+                "Call this before score_ihc when the user mentions a marker but you're not "
+                "sure which preset fits."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "score_ihc",
+            "description": (
+                "Run rule-based IHC scoring across every slide in a registered dataset. "
+                "No training required — uses color deconvolution (H/E/DAB) + cellpose (or "
+                "a morphology fallback) to compute a clinical score per slide (e.g. Ki-67 "
+                "proliferation index, HER2 0/1+/2+/3+, ER Allred 0-8, PD-L1 TPS). "
+                "`rule_override` lets you tweak thresholds/patches_per_slide on the fly — "
+                "great when the user says \"use a stricter DAB cutoff\" or \"sample 500 "
+                "patches per slide\". Writes a CSV under the dataset dir and returns summary "
+                "stats (mean/median/min/max score, n scored, n failed)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dataset_id": {"type": "string", "description": "Dataset to score (e.g. tcga-brca-her2)"},
+                    "rule": {
+                        "type": "string",
+                        "description": "Preset name.",
+                        "enum": ["ki67_pi", "er_allred", "pr_allred", "her2_membrane", "pdl1_tps"],
+                    },
+                    "rule_override": {
+                        "type": "object",
+                        "description": "Patch any Rule field on the fly. Common keys: dab_threshold (float|list), patches_per_slide (int), patch_size (int), target_mpp (float).",
+                    },
+                    "max_slides": {"type": "integer", "description": "Cap for quick dry-runs. Omit to score all."},
+                    "use_cellpose": {"type": "boolean", "description": "Use cellpose for nuclear segmentation (slower, more accurate). Default true."},
+                },
+                "required": ["dataset_id", "rule"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "build_ihc_patch_labels",
+            "description": (
+                "Bootstrap a per-patch training set from the same rule engine. For each slide, "
+                "samples N tissue patches, computes the rule's continuous score per patch, and "
+                "writes two CSVs: patch-level (slide_id, patch_idx, label) and slide-level "
+                "(mean over patches). Use these as supervision for a learned MIL/regressor on "
+                "top of UNI/GigaPath features — same rule, but now GPU-efficient at inference."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dataset_id": {"type": "string"},
+                    "rule": {
+                        "type": "string",
+                        "enum": ["ki67_pi", "er_allred", "pr_allred", "her2_membrane", "pdl1_tps"],
+                    },
+                    "rule_override": {"type": "object"},
+                    "patches_per_slide": {"type": "integer", "description": "Overrides the rule's default (e.g. 400 for denser supervision)."},
+                    "out_name": {"type": "string", "description": "Base name for the output CSVs (default: patchlabels_<rule>)."},
+                },
+                "required": ["dataset_id", "rule"],
+            },
         },
     },
     # --- Manuscript (LaTeX) — draft, edit, and compile the session's paper ---
@@ -2300,6 +2452,95 @@ async def _execute_tool(name: str, arguments: dict[str, Any], session_id: str = 
                 text = _read_session_notes(session_id)
                 return text or "(notebook is empty — use write_note to add entries)"
 
+            # --- Task plan ---
+            elif name == "create_task_plan":
+                if not session_id:
+                    return "Error: session context unavailable for task plan."
+                from pathclaw.api.routes import tasks as _tasks
+                tasks_in = arguments.get("tasks") or []
+                if not tasks_in:
+                    return "Error: tasks list is empty."
+                now = _tasks._now_iso()
+                new_tasks = []
+                for i, t in enumerate(tasks_in, start=1):
+                    title = (t.get("title") or "").strip()
+                    if not title:
+                        continue
+                    new_tasks.append({
+                        "id": i,
+                        "title": title[:120],
+                        "description": (t.get("description") or "")[:400],
+                        "status": "pending",
+                        "pause_after": bool(t.get("pause_after", False)),
+                        "created_at": now,
+                        "updated_at": now,
+                    })
+                if not new_tasks:
+                    return "Error: all tasks were empty."
+                plan = {
+                    "session_id": session_id,
+                    "created_at": now,
+                    "updated_at": now,
+                    "tasks": new_tasks,
+                }
+                _tasks.save_plan(plan)
+                lines = [f"Plan created ({len(new_tasks)} tasks):"]
+                for t in new_tasks:
+                    mark = " (pause_after)" if t["pause_after"] else ""
+                    lines.append(f"  [ ] {t['id']}. {t['title']}{mark}")
+                lines.append("Start with task 1: call update_task_status(task_id=1, status=\"in_progress\") then do the work.")
+                return "\n".join(lines)
+
+            elif name == "update_task_status":
+                if not session_id:
+                    return "Error: session context unavailable for task plan."
+                from pathclaw.api.routes import tasks as _tasks
+                task_id = arguments.get("task_id")
+                status_val = (arguments.get("status") or "").strip()
+                valid = {"pending", "in_progress", "completed", "skipped"}
+                if status_val not in valid:
+                    return f"Error: status must be one of {sorted(valid)}"
+                plan = _tasks.load_plan(session_id)
+                if not plan.get("tasks"):
+                    return "Error: no plan exists. Call create_task_plan first."
+                now = _tasks._now_iso()
+                hit = None
+                for t in plan["tasks"]:
+                    if t["id"] == task_id:
+                        t["status"] = status_val
+                        t["updated_at"] = now
+                        hit = t
+                        break
+                if not hit:
+                    return f"Error: task {task_id} not in plan. Existing ids: {[t['id'] for t in plan['tasks']]}"
+                plan["updated_at"] = now
+                _tasks.save_plan(plan)
+                remaining = [t for t in plan["tasks"] if t["status"] == "pending"]
+                if status_val == "completed":
+                    if hit.get("pause_after"):
+                        return f"Task {task_id} '{hit['title']}' → completed. pause_after=True — stop and wait for user input before continuing."
+                    if remaining:
+                        nxt = remaining[0]
+                        return f"Task {task_id} '{hit['title']}' → completed. Next: task {nxt['id']} '{nxt['title']}' — call update_task_status(task_id={nxt['id']}, status=\"in_progress\") and start."
+                    return f"Task {task_id} '{hit['title']}' → completed. All tasks done — summarize for the user."
+                return f"Task {task_id} '{hit['title']}' → {status_val}."
+
+            elif name == "get_task_plan":
+                if not session_id:
+                    return "Error: session context unavailable for task plan."
+                from pathclaw.api.routes import tasks as _tasks
+                plan = _tasks.load_plan(session_id)
+                if not plan.get("tasks"):
+                    return "No active plan. Use create_task_plan to start one."
+                lines = [f"Plan ({len(plan['tasks'])} tasks):"]
+                for t in plan["tasks"]:
+                    mark = {"completed": "[x]", "in_progress": "[~]", "pending": "[ ]", "skipped": "[-]"}.get(
+                        t.get("status", "pending"), "[ ]"
+                    )
+                    pause = " (pause_after)" if t.get("pause_after") else ""
+                    lines.append(f"  {mark} {t['id']}. {t['title']}{pause}")
+                return "\n".join(lines)
+
             # --- Manuscript (LaTeX) ---
             elif name == "write_manuscript":
                 if not session_id:
@@ -2690,6 +2931,56 @@ async def _execute_tool(name: str, arguments: dict[str, Any], session_id: str = 
                 if not plots:
                     return "No plots generated yet."
                 return "Generated plots:\n" + "\n".join(f"  • {p}" for p in plots)
+
+            # --- IHC scoring ---
+            elif name == "list_ihc_rules":
+                resp = await client.get(f"{base}/api/ihc/rules")
+                if resp.status_code != 200:
+                    return f"Error listing IHC rules: HTTP {resp.status_code} {resp.text[:300]}"
+                rules = resp.json().get("rules", [])
+                lines = []
+                for r in rules:
+                    lines.append(
+                        f"• {r['name']} ({r['marker']}) — compartment={r['compartment']}, "
+                        f"agg={r['aggregation']}, DAB thr={r['dab_threshold']}. {r.get('notes','')}"
+                    )
+                return "Available IHC presets:\n" + "\n".join(lines)
+
+            elif name == "score_ihc":
+                payload = dict(arguments)
+                if session_id:
+                    payload.setdefault("session_id", session_id)
+                resp = await client.post(f"{base}/api/ihc/score", json=payload, timeout=None)
+                if resp.status_code != 200:
+                    return f"IHC score failed: HTTP {resp.status_code} — {resp.text[:500]}"
+                d = resp.json()
+                lines = [
+                    f"IHC scoring complete. Rule: {d.get('rule')}. Dataset: {d.get('dataset_id')}.",
+                    f"  slides scored: {d.get('n_scored')}/{d.get('n_slides')} (failed {d.get('n_failed',0)})",
+                ]
+                for k in ("mean_score", "median_score", "min_score", "max_score"):
+                    if k in d:
+                        lines.append(f"  {k}: {d[k]:.3f}")
+                if d.get("csv_path"):
+                    lines.append(f"  CSV: {d['csv_path']}")
+                return "\n".join(lines)
+
+            elif name == "build_ihc_patch_labels":
+                payload = dict(arguments)
+                if session_id:
+                    payload.setdefault("session_id", session_id)
+                resp = await client.post(f"{base}/api/ihc/patch-labels", json=payload, timeout=None)
+                if resp.status_code != 200:
+                    return f"build_ihc_patch_labels failed: HTTP {resp.status_code} — {resp.text[:500]}"
+                d = resp.json()
+                lines = [
+                    f"Patch-level labels generated. Rule: {d.get('rule')}. Dataset: {d.get('dataset_id')}.",
+                    f"  slides: {d.get('n_slides')}, patches labeled: {d.get('n_patch_labels')}",
+                    f"  patch CSV: {d.get('patch_csv')}",
+                    f"  slide CSV: {d.get('slide_csv')}",
+                    f"  note: {d.get('note','')}",
+                ]
+                return "\n".join(lines)
 
             # --- Job Status (unified) ---
             elif name == "get_job_status":
@@ -4267,6 +4558,15 @@ async def _stream_generator(
 
             _dur_ms = int((_time.monotonic() - _t0) * 1000)
             yield _sse({"type": "tool_result", "name": fn_name, "result": result[:2000], "duration_ms": _dur_ms})
+
+            # Live task-plan updates for the frontend checklist
+            if fn_name in ("create_task_plan", "update_task_status") and session_id:
+                try:
+                    from pathclaw.api.routes.tasks import load_plan as _load_plan
+                    _plan_snapshot = _load_plan(session_id)
+                    yield _sse({"type": "task_plan", "plan": _plan_snapshot})
+                except Exception:
+                    pass
 
             messages.append({"role": "tool", "content": result})
 

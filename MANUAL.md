@@ -156,7 +156,7 @@ Metrics: AUROC, balanced accuracy, F1, confusion matrix. Plots land under
 
 ## 5. Agent workflows (natural-language recipes)
 
-The agent reads 15 skill modules (keyword-triggered) and calls 66 tools. A few
+The agent reads 15 skill modules (keyword-triggered) and calls 73 tools. A few
 canonical prompts:
 
 - *"Download 20 TCGA-UCEC diagnostic slides, preprocess, extract UNI features,
@@ -217,6 +217,113 @@ generate an oncoplot for the top 20 most-mutated genes
 discover biomarkers: differentially-mutated genes between model-predicted
   MSI-high and MSI-low slides
 ```
+
+---
+
+## 7b. IHC scoring (rule-based + learned)
+
+PathClaw ships a pluggable IHC (immunohistochemistry) engine. The agent calls
+it through three tools; it also runs standalone from `POST /api/ihc/score`.
+
+### Rule-based path
+
+Color deconvolution separates H / E / DAB with `skimage.color.rgb2hed`.
+Cellpose (`cyto2`) segments nuclei — with a morphology-based fallback if
+cellpose is not installed. Per-cell or per-membrane DAB intensity is then
+thresholded and aggregated into a clinical score.
+
+```
+score KI67 on dataset tcga-brca-ki67 — use the ki67_pi preset but tighten
+the DAB threshold to 0.12 and sample 400 patches per slide
+```
+
+The agent resolves this to:
+
+```json
+{
+  "tool": "score_ihc",
+  "arguments": {
+    "dataset_id": "tcga-brca-ki67",
+    "rule": "ki67_pi",
+    "rule_override": { "dab_threshold": 0.12, "patches_per_slide": 400 }
+  }
+}
+```
+
+Output: `~/.pathclaw/datasets/<id>/ihc_ki67_pi.csv`, one row per slide with
+the score, interpretation label, positive/total cell counts, and QC.
+
+### Built-in presets
+
+| Preset | Marker | Compartment | Aggregation | Output |
+|--------|--------|-------------|-------------|--------|
+| `ki67_pi` | Ki-67 | nuclear | % positive nuclei | 0–100 |
+| `er_allred` | ER | nuclear | Allred (proportion + intensity) | 0–8 |
+| `pr_allred` | PR | nuclear | Allred | 0–8 |
+| `her2_membrane` | HER2 | membrane | DAB band + completeness | 0 / 1+ / 2+ / 3+ |
+| `pdl1_tps` | PD-L1 | membrane | Tumor Proportion Score | 0–100 |
+
+Dynamic markers (CK7, p53, E-cadherin, mIHC panels) register at runtime:
+
+```python
+# e.g. in a plugin's __init__
+from pathclaw.ihc import register_rule, Rule
+register_rule("ck7_cytoplasmic", Rule(
+    name="ck7_cytoplasmic", marker="ck7",
+    compartment="cytoplasm", dab_threshold=0.18,
+    aggregation="mean_intensity",
+))
+```
+
+### Learned path
+
+`build_ihc_patch_labels` turns the rule into per-patch supervision:
+
+```
+build ki67 patch labels for tcga-brca-ki67 with 300 patches per slide
+```
+
+Writes two CSVs under the dataset dir:
+- `patchlabels_ki67_pi.csv` — `slide_id, patch_idx, label` (continuous)
+- `patchlabels_ki67_pi_slide.csv` — slide-level mean (for MIL regression)
+
+Feed `patchlabels_*_slide.csv` to `start_training` as `label_file` to train
+a regressor on UNI/GigaPath features — same score as the rule but
+GPU-efficient at inference.
+
+---
+
+## 7c. Task plan (multi-step drift guard)
+
+Small local LLMs drift on ≥3-step requests. To counter this, the agent is
+instructed to commit to an explicit plan up front using three tools:
+`create_task_plan`, `update_task_status`, `get_task_plan`. The plan is
+stored at `~/.pathclaw/sessions/<sid>/tasks.json` and surfaced two ways:
+
+1. **System prompt injection** — every turn sees the live plan at the top
+   of the system prompt with a `[x] [~] [ ] [-]` mark per task and an
+   explicit rule ("work the first `[ ]` task next").
+2. **Sidebar checklist** — below Active Jobs. Each tick flips in real time
+   as `update_task_status` SSE events arrive (no refresh).
+
+Default behavior is **auto-advance**: finish a task, mark it completed,
+start the next one in the same turn. Set `pause_after: true` on any task
+to make the agent pause and wait for user input before moving on (useful
+after "show the search results" or "check the download succeeded").
+
+Typical auto-generated plan for a paper run:
+
+```
+[ ] 1. List existing plots, note gaps
+[ ] 2. Generate missing ROC, confusion matrix, loss curves
+[ ] 3. Literature search — 2 queries, save top 10 to refs.bib
+[ ] 4. Write manuscript sections (abstract, intro, methods, results, discussion)
+[ ] 5. Attach figures to manuscript
+[ ] 6. Compile PDF
+```
+
+`Clear` in the sidebar deletes the plan (or the agent can call
+`create_task_plan` again with a new list to replace it).
 
 ---
 

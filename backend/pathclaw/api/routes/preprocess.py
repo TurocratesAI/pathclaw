@@ -113,7 +113,8 @@ async def get_job_status(job_id: str):
     """Get preprocessing job status."""
     if job_id not in _jobs:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-    return _jobs[job_id]
+    from ._eta import annotate_eta
+    return annotate_eta(dict(_jobs[job_id]))
 
 
 @router.get("/preview/{dataset_id}")

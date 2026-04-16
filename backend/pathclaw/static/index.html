@@ -1415,6 +1415,35 @@
         .job-mini-fill.warn { background: #f59e0b }
         .job-mini-fill.queued { background: var(--text-3) }
 
+        /* === Task-plan panel (live agent checklist) === */
+        .tasks-panel { padding: 0 8px 8px }
+        .tasks-panel-title {
+            font-size: 10px;
+            font-weight: 700;
+            color: var(--text-3);
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            padding: 8px 4px 4px;
+            border-top: 1px solid var(--border);
+            margin-top: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .tasks-panel-title .tp-clear { cursor: pointer; color: var(--text-3); font-weight: 500; text-transform: none; letter-spacing: 0; font-size: 10px; }
+        .tasks-panel-title .tp-clear:hover { color: var(--red) }
+        .task-row { display: flex; align-items: flex-start; gap: 6px; padding: 4px 4px; font-size: 11px; line-height: 1.4; border-radius: var(--r-sm); }
+        .task-row:hover { background: var(--bg-2) }
+        .task-mark { flex-shrink: 0; font-family: var(--mono); font-size: 12px; width: 14px; text-align: center; }
+        .task-mark.pending { color: var(--text-3) }
+        .task-mark.in_progress { color: var(--blue); animation: badge-pulse 1.5s ease-in-out infinite }
+        .task-mark.completed { color: var(--green) }
+        .task-mark.skipped { color: var(--text-3); text-decoration: line-through }
+        .task-title { flex: 1; min-width: 0; color: var(--text-1); word-break: break-word }
+        .task-row.completed .task-title { color: var(--text-3); text-decoration: line-through }
+        .task-row.skipped .task-title { color: var(--text-3); text-decoration: line-through; opacity: 0.6 }
+        .task-pause { font-size: 9px; color: #f59e0b; text-transform: uppercase; letter-spacing: 0.3px; margin-left: 4px; flex-shrink: 0 }
+
         /* === Error toast === */
         .error-toast { position: fixed; bottom: 20px; right: 20px; z-index: 200; background: var(--red-dim); color: var(--red); border: 1px solid rgba(239, 68, 68, 0.3); padding: 10px 18px; border-radius: var(--r); font-size: 13px; font-weight: 500; animation: slideUp 300ms ease; max-width: 360px; box-shadow: var(--shadow-lg); pointer-events: none; }
 
@@ -1578,6 +1607,7 @@
                 <div id="dsList" style="display:none"></div>
                 <div id="expList" style="display:none"></div>
                 <div id="jobsPanel" class="jobs-panel" style="display:none"></div>
+                <div id="tasksPanel" class="tasks-panel" style="display:none"></div>
             </div>
         </div>
 
@@ -1720,7 +1750,7 @@
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs/loader.js"></script>
-    <script src="/static/app.js?v=45" defer></script>
+    <script src="/static/app.js?v=46" defer></script>
 </body>
 
 </html>

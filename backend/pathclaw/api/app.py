@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from pathclaw.api.routes import datasets, preprocess, training, evaluation, artifacts, gdc, chat, features, config_space, tileserver, folders, telegram, queue as queue_route, workspace_fs, plugins as plugins_route
+from pathclaw.api.routes import datasets, preprocess, training, evaluation, artifacts, gdc, chat, features, config_space, tileserver, folders, telegram, queue as queue_route, workspace_fs, plugins as plugins_route, tasks as tasks_route, ihc as ihc_route
 
 # ---------------------------------------------------------------------------
 # App configuration
@@ -76,6 +76,8 @@ app.include_router(telegram.router, prefix="/api/telegram", tags=["telegram"])
 app.include_router(queue_route.router, prefix="/api/queue", tags=["queue"])
 app.include_router(workspace_fs.router, prefix="/api/workspace", tags=["workspace"])
 app.include_router(plugins_route.router, prefix="/api/plugins", tags=["plugins"])
+app.include_router(tasks_route.router, prefix="/api/chat", tags=["tasks"])
+app.include_router(ihc_route.router, prefix="/api/ihc", tags=["ihc"])
 from pathclaw.api.routes import upload as upload_route  # noqa: E402
 app.include_router(upload_route.router, prefix="/api/upload", tags=["upload"])
 

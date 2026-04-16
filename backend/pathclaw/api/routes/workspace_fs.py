@@ -60,7 +60,15 @@ def safe_workspace_path(rel: str, session_id: str | None = None) -> Path:
     """Resolve a relative path inside the session's workspace root.
 
     Callable from chat.py's workspace tools — shared path-whitelist logic.
+    A leading ``workspace/`` (or ``./workspace/``) is stripped: tool outputs
+    render paths as ``workspace/<rel>``, and models often echo that prefix
+    back on the next call. Accept both forms.
     """
+    rel = (rel or "").strip()
+    if rel.startswith("./"):
+        rel = rel[2:]
+    if rel.startswith("workspace/"):
+        rel = rel[len("workspace/"):]
     if not rel or rel.startswith("/") or ".." in Path(rel).parts:
         raise HTTPException(status_code=400, detail=f"Invalid workspace path: {rel!r}")
     _ensure_workspace(session_id)

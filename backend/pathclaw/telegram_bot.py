@@ -265,12 +265,29 @@ async def _stream_to_session(
                     elif t == "tool_result":
                         dur_ms = evt.get("duration_ms", 0)
                         dur = f"{dur_ms/1000:.1f}s" if dur_ms >= 1000 else f"{dur_ms}ms"
-                        res = (evt.get("result") or "").strip().splitlines()
+                        raw_res = (evt.get("result") or "").strip()
+                        res = raw_res.splitlines()
                         first = res[0] if res else ""
                         summary = first[:140] + ("…" if len(first) > 140 else "")
+                        # If the tool returned job status JSON, surface progress/ETA on its own line.
+                        eta_line = ""
+                        try:
+                            obj = json.loads(raw_res) if raw_res.startswith("{") else None
+                            if isinstance(obj, dict) and ("progress" in obj or "eta_human" in obj):
+                                bits = []
+                                if "status" in obj: bits.append(str(obj["status"]))
+                                if obj.get("progress") is not None:
+                                    bits.append(f"{round(float(obj['progress']) * 100)}%")
+                                if obj.get("elapsed_human"): bits.append(f"elapsed {obj['elapsed_human']}")
+                                if obj.get("eta_human"): bits.append(f"ETA {obj['eta_human']}")
+                                if bits: eta_line = "  ⏱ " + " · ".join(bits)
+                        except Exception:
+                            pass
                         if current_tool_idx is not None:
                             trace_lines[current_tool_idx] += f"  — {dur}"
-                            if summary:
+                            if eta_line:
+                                trace_lines.append(eta_line)
+                            elif summary:
                                 trace_lines.append(f"  ↳ {summary}")
                         current_tool_idx = None
                         await _maybe_flush()

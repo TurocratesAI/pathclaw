@@ -120,7 +120,22 @@ def evaluate_model(config: dict, job_status: Optional[dict] = None) -> dict:
             ))
     except Exception as e:
         logger.warning(f"Could not compute AUROC: {e}")
-    
+
+    # F1 variants, QWK, PR-AUC, sensitivity/specificity
+    try:
+        from sklearn.metrics import f1_score, cohen_kappa_score, average_precision_score
+        metrics["macro_f1"] = float(f1_score(all_targets, all_preds, average="macro", zero_division=0))
+        metrics["weighted_f1"] = float(f1_score(all_targets, all_preds, average="weighted", zero_division=0))
+        metrics["qwk"] = float(cohen_kappa_score(all_targets, all_preds, weights="quadratic"))
+        if metrics["num_classes"] == 2:
+            metrics["pr_auc"] = float(average_precision_score(all_targets, all_probs[:, 1]))
+            cm_bin = confusion_matrix(all_targets, all_preds, labels=[0, 1])
+            tn, fp, fn, tp = cm_bin.ravel()
+            metrics["sensitivity"] = float(tp / (tp + fn)) if (tp + fn) > 0 else 0.0
+            metrics["specificity"] = float(tn / (tn + fp)) if (tn + fp) > 0 else 0.0
+    except Exception as e:
+        logger.warning(f"Could not compute extended metrics: {e}")
+
     # Confusion matrix
     cm = confusion_matrix(all_targets, all_preds)
     metrics["confusion_matrix"] = cm.tolist()

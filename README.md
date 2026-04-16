@@ -8,7 +8,7 @@
 
 PathClaw is a viberesearching environment for medical imaging. The first release focuses on **computational pathology**: WSI preprocessing, multiple-instance learning, genomic analysis, and per-session manuscript authoring. Future releases extend the same agent-driven workflow to radiology and other medical imaging modalities.
 
-It is a FastAPI + browser-based research platform. An in-app LLM agent drives the full pipeline — TCGA download → WSI preprocessing → feature extraction → MIL training → evaluation → genomic analysis — through a chat interface, invoking 66 typed tools and 15 keyword-triggered skill modules. You describe the experiment in plain English; the agent runs it, confirms before destructive steps, and writes results back into a per-session workspace you control.
+It is a FastAPI + browser-based research platform. An in-app LLM agent drives the full pipeline — TCGA download → WSI preprocessing → feature extraction → MIL training → evaluation → genomic analysis — through a chat interface, invoking 73 typed tools and 15 keyword-triggered skill modules. You describe the experiment in plain English; the agent runs it, confirms before destructive steps, and writes results back into a per-session workspace you control.
 
 <!-- Drop a single platform screenshot at docs/screenshot.png (recommended: three-pane default view with sidebar + center Overview + chat panel). -->
 <!-- ![PathClaw UI](docs/screenshot.png) -->
@@ -20,7 +20,7 @@ It is a FastAPI + browser-based research platform. An in-app LLM agent drives th
 - [Quickstart](#quick-setup)
 - [First experiment in 5 minutes](#first-experiment-in-5-minutes)
 - [Features](#what-it-does)
-- [All tools (66)](#all-tools-66-total)
+- [All tools (73)](#all-tools-73-total)
 - [Architecture](#architecture)
 - [Session model](#research-workspace--multi-agent-multi-project)
 - [Plugin system](#plugin-system)
@@ -166,7 +166,7 @@ Agent tools: `list_plugins`, `register_plugin`, `update_plugin_config`, `smoke_t
 
 ---
 
-## All tools (66 total)
+## All tools (73 total)
 
 ### Datasets (3)
 | Tool | Description |
@@ -223,9 +223,24 @@ MIL methods: ABMIL, MeanPool, TransMIL, CLAM, DSMIL, RRTMIL, WIKG (all with opti
 | Tool | Description |
 |------|-------------|
 | `start_evaluation` | Run evaluation on val/test split |
-| `get_eval_metrics` | AUROC, balanced accuracy, confusion matrix, classification report |
+| `get_eval_metrics` | AUROC, accuracy, balanced accuracy, macro/weighted F1, QWK, PR-AUC, sensitivity, specificity, confusion matrix |
 | `get_eval_plots` | ROC curves, confusion matrix PNGs |
 | `generate_heatmap` | Attention heatmap overlay for WSI viewer |
+
+**Metric selection.** Both `start_training` and `start_evaluation` take `evaluation.metrics`
+(a list). The agent is prompted to pause before training and ask which metric matters for
+your task — `auroc` (default for binary mutation/subtype calling), `accuracy` /
+`balanced_accuracy` (balanced cohorts), `macro_f1` / `weighted_f1` (class imbalance),
+`qwk` (ordinal targets: grade I–IV, Gleason), or `sensitivity` / `specificity` (clinical
+screening with a fixed threshold). All metrics are computed regardless; the first entry
+drives early stopping and best-checkpoint selection.
+
+### Job status includes live ETA
+`GET /api/training/{id}`, `/api/features/{id}`, and `/api/preprocess/{id}` now return
+`elapsed_human`, `eta_seconds`, and `eta_human` fields (ETA = `elapsed × (1 − progress) /
+progress`). The jobs panel surfaces these alongside epoch/loss, and the Telegram bot prints
+a `⏱ running · 42% · elapsed 3m 10s · ETA 4m 20s` line whenever the agent polls job
+status — so you can ask "how far along is it?" from either UI and get a numeric answer.
 
 ### Genomics (10)
 | Tool | Description |
@@ -294,6 +309,49 @@ MIL methods: ABMIL, MeanPool, TransMIL, CLAM, DSMIL, RRTMIL, WIKG (all with opti
 | `list_artifacts` | List all experiments with model availability |
 | `compare_experiments` | Side-by-side metric comparison across experiments |
 | `make_plot` | Generate a custom plot for an experiment (ROC / PR / calibration / confusion / custom matplotlib) |
+
+### IHC scoring (3)
+Rule-based — no training required. Color deconvolution (`skimage.rgb2hed`) separates
+H / E / DAB; cellpose (or a morphology fallback) segments nuclei; per-cell or
+membrane-band DAB is aggregated to a clinical score per slide. Writes
+`~/.pathclaw/datasets/{id}/ihc_{rule}.csv` with one row per slide.
+
+| Tool | Description |
+|------|-------------|
+| `list_ihc_rules` | Enumerate built-in presets with compartments + thresholds |
+| `score_ihc` | Score every slide in a dataset against a preset (`rule_override` patches any field on the fly) |
+| `build_ihc_patch_labels` | Emit per-patch + per-slide CSVs from the rule — supervision for a learned regressor on top of UNI/GigaPath features |
+
+Built-in presets (extend via `register_rule` in plugin code):
+| Preset | Marker | Compartment | Aggregation | Output range |
+|--------|--------|-------------|-------------|-----------|
+| `ki67_pi` | Ki-67 | nuclear | % positive nuclei | 0–100 |
+| `er_allred` | ER | nuclear | Allred proportion + intensity | 0–8 |
+| `pr_allred` | PR | nuclear | Allred proportion + intensity | 0–8 |
+| `her2_membrane` | HER2 | membrane | DAB band + completeness | 0 / 1+ / 2+ / 3+ |
+| `pdl1_tps` | PD-L1 | membrane | Tumor Proportion Score | 0–100 |
+
+Dynamic rules: pass `rule_override={"dab_threshold": 0.12, "patches_per_slide": 400, ...}` to
+`score_ihc` for ad-hoc adjustments without editing code. Custom markers (CK7, p53,
+E-cadherin, …) register at runtime — see `docs/PLUGIN_DEV.md`.
+
+### Task plan — prevent multi-step drift
+Small local LLMs (`gemma4:26b`, `qwen3:8b`) lose long plans mid-conversation. For any
+request that needs 3+ tool calls (paper generation, full pipelines, IHC cohort
+scoring, genomic workflows), the agent now **commits to a plan up front**, one task
+per step, via three tools:
+
+| Tool | Description |
+|------|-------------|
+| `create_task_plan` | Post an ordered checklist at the start of a multi-step request |
+| `update_task_status` | Flip tasks to `in_progress` / `completed` / `skipped` as it works |
+| `get_task_plan` | Re-read the plan (the live plan is also injected into every system prompt so the agent never loses track) |
+
+The plan is stored at `~/.pathclaw/sessions/{sid}/tasks.json`, rendered live in the
+sidebar below Active Jobs, and ticked off in real time as each `update_task_status`
+call fires. Set `pause_after: true` on a task to make the agent stop and wait for
+your input before moving to the next step (default is auto-advance). SSE events
+(`task_plan`) keep the frontend checklist in sync mid-turn.
 
 ## Writing custom Python scripts
 
