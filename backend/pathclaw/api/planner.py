@@ -112,10 +112,29 @@ def should_plan(user_message: str) -> bool:
     return False
 
 
+def _has_ngram_loop(s: str, reps: int = 3) -> bool:
+    """Detect the known gemma4 repetition-loop artifact under
+    grammar-constrained decoding (ollama #15502). Returns True when any
+    word n-gram (n ∈ {1, 2, 3, 4}) repeats ≥``reps`` consecutive times.
+    Covers both single-word stuck loops ("ROC ROC ROC") and phrase loops
+    ("attachment of the attachment of the attachment").
+    """
+    words = s.split()
+    for n in (1, 2, 3, 4):
+        if len(words) < n * reps:
+            continue
+        for i in range(len(words) - n * reps + 1):
+            first = tuple(words[i : i + n])
+            if all(tuple(words[i + k * n : i + (k + 1) * n]) == first for k in range(reps)):
+                return True
+    return False
+
+
 def _clean_tasks(raw: Any) -> list[dict]:
     """Normalize planner output. Gemma4's grammar-constrained decoder sometimes
-    emits empty/short titles ("", ":") — fall back to the description's first
-    words so the task still shows up usably."""
+    emits empty/short titles ("", ":") or repetition loops in descriptions —
+    fall back to the description's first words for empty titles, and drop
+    tasks whose description is a repetition loop so the caller can retry."""
     out: list[dict] = []
     if not isinstance(raw, list):
         return out
@@ -124,6 +143,11 @@ def _clean_tasks(raw: Any) -> list[dict]:
             continue
         title = (t.get("title") or "").strip().lstrip(":").strip()[:80]
         desc = (t.get("description") or "").strip().lstrip(":").strip()[:500]
+        if _has_ngram_loop(title) or _has_ngram_loop(desc):
+            # Returning an empty list signals the caller to retry with a
+            # different seed — one bad task invalidates the whole plan
+            # because preserving user order matters.
+            return []
         if len(title) < 5:
             # Derive title from description when the LLM leaves title blank.
             first_sentence = re.split(r"[.!?:]", desc, maxsplit=1)[0].strip()
